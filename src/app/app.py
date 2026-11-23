@@ -10,6 +10,7 @@ Bốn câu hỏi của sản phẩm và tab trả lời:
   4. Phương pháp có hiệu quả khi kiểm chứng lịch sử không?          -> tab Kiểm chứng
 Tab Realtime Monitor chứng minh tích hợp WebSocket SSI; tab Phương pháp ghi công thức và giới hạn.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from src import config  # noqa: E402
 from src.analytics import backtest as bt  # noqa: E402
 from src.analytics import market_health as mh  # noqa: E402
 from src.app import services as sv  # noqa: E402
+from src.data import sync  # noqa: E402
 
 st.set_page_config(page_title="Smart Market Radar", page_icon="📡", layout="wide")
 DB = config.DB_PATH
@@ -32,20 +34,43 @@ THRESHOLDS = {"500 triệu": 5e8, "1 tỷ (mặc định)": 1e9, "5 tỷ": 5e9}
 GROUPS = (("trend", "Xu hướng"), ("momentum", "Động lượng"), ("liquidity", "Thanh khoản"), ("risk", "Rủi ro thấp"))
 
 
-# ---------- bộ nhớ đệm ----------
-@st.cache_resource
+# ---------- đồng bộ dữ liệu từ máy chủ (GitHub Release) ----------
+def get_secret(name: str) -> str:
+    """Đọc cấu hình từ biến môi trường (.env) hoặc st.secrets (khi chạy trên Streamlit Cloud)."""
+    v = os.getenv(name)
+    if v:
+        return v
+    try:
+        return str(st.secrets.get(name, "") or "")
+    except Exception:   # không có tệp secrets
+        return ""
+
+
+@st.cache_resource(ttl=900, show_spinner="Đang kiểm tra dữ liệu mới trên máy chủ...")
+def auto_sync(db_path: str, repo: str, _token: str):
+    """Mỗi 15 phút (khi có người mở/làm mới trang) kiểm tra Release; có bản mới thì tải về và thay DB."""
+    try:
+        return sync.download_latest(repo, _token, db_path)
+    except sync.SyncError as e:
+        return {"status": "error", "message": str(e)}
+    except Exception as e:   # vd. Windows không thay được tệp DB đang mở
+        return {"status": "error", "message": f"{type(e).__name__}: {e}"}
+
+
+# ---------- bộ nhớ đệm (chỉ giữ 1 bản để không tích tụ bộ nhớ khi dữ liệu đổi) ----------
+@st.cache_resource(max_entries=1)
 def get_con(path: str, _sig):
     return sv.open_db(path)
 
 
-@st.cache_resource(show_spinner="Đang tính chỉ báo trên toàn bộ dữ liệu (lần đầu mất vài chục giây)...")
+@st.cache_resource(max_entries=1, show_spinner="Đang tính chỉ báo trên toàn bộ dữ liệu (lần đầu mất vài chục giây)...")
 def get_analysis(path: str, sig, min_value: float):
     a = sv.load_analysis(get_con(path, sig), min_value)
     a["breadth_counts"] = sv.breadth_counts(a)
     return a
 
 
-@st.cache_resource(show_spinner="Đang chạy kiểm chứng lịch sử (1-3 phút)...")
+@st.cache_resource(max_entries=2, show_spinner="Đang chạy kiểm chứng lịch sử (1-3 phút)...")
 def get_backtest(path: str, sig, min_value: float, top_frac: float, cost_bps: float):
     a = get_analysis(path, sig, min_value)
     p = a["panel"]
@@ -100,6 +125,9 @@ st.title("📡 Smart Market Radar")
 st.caption("Ra-đa sức khỏe thị trường chứng khoán Việt Nam và sàng lọc cổ phiếu theo sức mạnh tương đối · "
            "Dữ liệu: SSI FastConnect v3 (REST + WebSocket) · Công cụ phân tích học thuật, **không phải khuyến nghị đầu tư**; "
            "không gửi lệnh giao dịch.")
+
+GH_REPO, GH_TOKEN = get_secret("GITHUB_REPO"), get_secret("GITHUB_TOKEN")
+sync_res = auto_sync(DB, GH_REPO, GH_TOKEN) if GH_REPO and GH_TOKEN else None
 
 try:
     sig = sv.db_signature(DB)
@@ -159,6 +187,8 @@ with c4.container(border=True):
     st.metric("Dữ liệu realtime gần nhất", ss_status["last"].strftime("%H:%M:%S %d/%m") if ss_status["available"] else "—",
               help="Thời điểm bản tin streaming cuối cùng được lưu vào cơ sở dữ liệu.")
     st.caption(f"{ss_status['sessions']} phiên · {ss_status['rows']:,} bản tin đã lưu")
+if sync_res and sync_res.get("status") == "error":
+    st.warning("Chưa đồng bộ được dữ liệu mới từ máy chủ (đang dùng bản đã có): " + sync_res["message"])
 if stale["level"] == "warn":
     st.warning("⏳ " + stale["message"])
 if asof.strftime("%Y-%m-%d") != fresh["prices_last_date"]:
@@ -255,7 +285,7 @@ with tabs[0]:
             show(style(fb, "% mã đủ thanh khoản có giá trên SMA50", 280, yaxis=dict(range=[0, 100])))
     st.caption(f"Phạm vi: các mã đủ thanh khoản (trung vị giá trị khớp 60 phiên ≥ {th_label}, giao dịch ≥ 80% số phiên) — "
                f"{int(bnow['tong'])} mã hôm nay. Mã tăng: đóng cửa > phiên trước; giảm: <; đứng giá: bằng nhau. "
-               "Mã thiếu giá hoặc bị gắn cờ lỗi giá không được tính.")
+               "Mã thiếu giá hoặc bị gắn cờ lỗi giá không được tính. Để tiết kiệm bộ nhớ, chỉ nạp các mã có thể đủ thanh khoản ở ngưỡng đang chọn.")
 
     chk = sv.breadth_crosscheck(con, A)
     with st.expander("Đối chiếu độ rộng tự tính với số liệu chính thức của sàn (indexSummary lưu mỗi ngày)"):
@@ -268,7 +298,7 @@ with tabs[0]:
                                                       "chenh_lech": "Chênh lệch (điểm %)"})[
                 ["Tăng (chính thức)", "Giảm (chính thức)", "% tăng chính thức", "% tăng tự tính", "Chênh lệch (điểm %)"]],
                 use_container_width=True)
-            st.caption("Tự tính dùng mọi mã cùng sàn có giá, kể cả mã kém thanh khoản; chênh lệch nhỏ là bình thường.")
+            st.caption("Tự tính chỉ dùng các mã cùng sàn đủ thanh khoản ở ngưỡng đang chọn, còn số chính thức tính mọi mã; chênh lệch nhỏ là bình thường.")
 
 # ===== Tab 2: xếp hạng cổ phiếu =====
 with tabs[1]:

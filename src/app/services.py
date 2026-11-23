@@ -56,7 +56,7 @@ def freshness(con) -> dict:
 
 def load_analysis(con, min_value: float) -> dict:
     """Tải bảng giá và tính điểm thị trường + chỉ báo cổ phiếu (nặng: nên được bộ nhớ đệm bởi giao diện)."""
-    p = pn.load_panel(con)
+    p = pn.load_panel(con, min_peak_value=min_value)
     if p.close.empty or p.index_close.dropna().empty:
         raise DataUnavailable("Thiếu dữ liệu giá cổ phiếu hoặc VN-Index.")
     el = pn.eligible_mask(p.value, min_value)

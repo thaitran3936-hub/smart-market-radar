@@ -1,0 +1,3 @@
+# chỉ cần cho bộ ghi streaming (scripts/stream_recorder.py)
+-r requirements.txt
+ssi-sdk>=3.3.0

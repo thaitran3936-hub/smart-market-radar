@@ -33,7 +33,9 @@ Yêu cầu Python 3.11+.
 ```
 python -m venv .venv
 .venv\Scripts\activate            # Windows (Linux/macOS: source .venv/bin/activate)
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt   # giao diện + phân tích (gọn, chạy được trên Streamlit Cloud)
+# pip install -r requirements-dev.txt     # thêm pytest
+# pip install -r requirements-stream.txt  # thêm ssi-sdk cho bộ ghi streaming
 copy .env.example .env             # rồi điền SSI_API_KEY và SSI_API_SECRET (lấy ở developers.ssi.com.vn)
 ```
 **Không bao giờ commit `.env`, `config.json`, `token_cache.json` hoặc thư mục `data/`** (đã nằm trong `.gitignore`).
@@ -140,3 +142,18 @@ Mỗi lần cập nhật ghi lại chuỗi của từng mã (vì giá điều ch
 Năm tab, mỗi tab trả lời một câu hỏi của sản phẩm: **Thị trường** (mạnh/trung tính/yếu?), **Xếp hạng cổ phiếu** (cổ phiếu nào tốt, mạnh hơn VN-Index?),
 **Realtime Monitor** (dữ liệu WebSocket đã lưu), **Kiểm chứng** (phương pháp có hiệu quả không?), **Phương pháp & giới hạn**.
 Giao diện tối mặc định (`.streamlit/config.toml`); đổi sang sáng ở menu ⋮ → Settings. Điểm Rủi ro thấp: cao = rủi ro thấp (tốt).
+
+
+## Đưa giao diện lên web (Streamlit Community Cloud) — người xem chỉ cần mở link
+1. share.streamlit.io → đăng nhập bằng GitHub → New app → chọn kho `smart-market-radar`, nhánh `main`, tệp chính `src/app/app.py`.
+2. Advanced settings → Secrets, dán (giá trị thật của bạn):
+```
+GITHUB_REPO = "chu-so-huu/smart-market-radar"
+GITHUB_TOKEN = "token-chi-doc-contents"
+```
+3. Lần mở đầu ứng dụng tự tải `market.db.gz` từ Release `data-latest`. Sau đó, mỗi lần có người mở hoặc làm mới trang (tối đa mỗi 15 phút
+   một lần kiểm tra), nếu Release có bản mới hơn thì tải về và tính lại. GitHub Actions cập nhật Release lúc 15:30 các ngày làm việc,
+   nên người xem không phải chạy lệnh nào.
+Giới hạn đã biết: Streamlit Cloud miễn phí cho tối đa khoảng 2,7 GB RAM (theo tài liệu tháng 2/2024, có thể đổi) và ứng dụng ngủ sau 12 giờ không có người
+truy cập (mở lại là chạy tiếp). Ứng dụng chỉ nạp các mã có thể đủ thanh khoản để giảm bộ nhớ (đo trên dữ liệu mô phỏng: 400 mã ≈ 0,5 GB).
+Dữ liệu hiển thị ở link công khai là chỉ báo tính từ dữ liệu SSI; hãy kiểm tra điều khoản của SSI trước khi công khai.

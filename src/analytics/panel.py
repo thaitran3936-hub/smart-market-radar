@@ -23,8 +23,17 @@ def _wide(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return df.pivot(index="trade_date", columns="symbol", values=col).sort_index()
 
 
-def load_panel(con, bench: str = "VNINDEX", start: str | None = None) -> Panel:
-    where = f"WHERE p.trade_date >= '{start}'" if start else ""
+def load_panel(con, bench: str = "VNINDEX", start: str | None = None, min_peak_value: float | None = None) -> Panel:
+    """Nạp bảng giá. Nếu có `min_peak_value`, chỉ nạp các mã CÓ THỂ đủ điều kiện ở ngưỡng đó: để trung vị 60 phiên
+    (tối thiểu 48 quan sát) ≥ ngưỡng thì phải có ≥ 24 phiên có giá trị khớp ≥ ngưỡng. Đây là điều kiện cần, nên kết quả
+    của các mã đủ điều kiện không đổi, còn bộ nhớ giảm nhiều (mã kém thanh khoản chiếm phần lớn số mã)."""
+    conds = []
+    if start:
+        conds.append(f"p.trade_date >= '{start}'")
+    if min_peak_value:
+        conds.append("p.symbol IN (SELECT symbol FROM prices_daily WHERE data_status IN ('ok','no_trade') "
+                     f"AND match_val >= {float(min_peak_value)!r} GROUP BY symbol HAVING COUNT(*) >= 24)")
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
     df = pd.read_sql_query(
         "SELECT p.symbol, p.trade_date, p.close, p.match_val, p.data_status, p.flags, s.board "
         f"FROM prices_daily p LEFT JOIN symbols s ON s.symbol = p.symbol {where}", con)
