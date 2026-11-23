@@ -1,0 +1,55 @@
+# Cập nhật dữ liệu tự động mỗi ngày làm việc, không cần bật máy cá nhân.
+# YÊU CẦU: kho GitHub ở chế độ PRIVATE; secrets SSI_API_KEY, SSI_API_SECRET (Settings > Secrets and variables > Actions).
+# Bản DB nén được lưu ở Release có thẻ `data-latest` (tệp market.db.gz); KHÔNG đưa DB vào git.
+name: daily-update
+on:
+  schedule:
+    - cron: "30 8 * * 1-5"   # 08:30 UTC = 15:30 giờ Việt Nam, thứ 2–thứ 6 (sau khi HOSE đóng cửa 14:45)
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Cập nhật mọi mã (không chỉ mã đang hoạt động)"
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SSI_API_KEY: ${{ secrets.SSI_API_KEY }}
+      SSI_API_SECRET: ${{ secrets.SSI_API_SECRET }}
+      DB_PATH: data/market.db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - run: pip install -r requirements-ci.txt
+      - name: Tải DB hiện có từ Release (nếu có)
+        run: |
+          mkdir -p data
+          gh release download data-latest --pattern market.db.gz --dir data || echo "Chưa có DB, sẽ tải từ đầu"
+          [ -f data/market.db.gz ] && gunzip -f data/market.db.gz || true
+      - name: Cập nhật (thứ 2–5: chỉ mã đang hoạt động; thứ 6: toàn bộ)
+        run: |
+          if [ "${{ github.event.inputs.full }}" = "true" ] || [ "$(date -u +%u)" = "5" ]; then
+            python scripts/daily_update.py
+          else
+            python scripts/daily_update.py --active-only
+          fi
+      - name: Kiểm tra toàn vẹn và nén
+        run: |
+          python -c "import sqlite3; c=sqlite3.connect('data/market.db'); assert c.execute('PRAGMA quick_check').fetchone()[0]=='ok'; print('rows', c.execute('select count(*) from prices_daily').fetchone()[0])"
+          gzip -c data/market.db > data/market.db.gz
+      - name: Đăng bản mới lên Release
+        run: |
+          gh release view data-latest >/dev/null 2>&1 || gh release create data-latest --title "Dữ liệu mới nhất" --notes "Tự động cập nhật. Không phải bản phát hành mã nguồn." --prerelease
+          gh release upload data-latest data/market.db.gz --clobber
