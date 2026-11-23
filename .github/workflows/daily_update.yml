@@ -38,7 +38,7 @@ jobs:
           mkdir -p data
           gh release download data-latest --pattern market.db.gz --dir data || echo "Chưa có DB, sẽ tải từ đầu"
           [ -f data/market.db.gz ] && gunzip -f data/market.db.gz || true
-      - name: Cập nhật (thứ 2–5: chỉ mã đang hoạt động; thứ 6: toàn bộ)
+      - name: "Cập nhật (thứ 2–5: chỉ mã đang hoạt động; thứ 6: toàn bộ)"
         run: |
           if [ "${{ github.event.inputs.full }}" = "true" ] || [ "$(date -u +%u)" = "5" ]; then
             python scripts/daily_update.py
