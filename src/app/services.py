@@ -362,21 +362,30 @@ MARKET_OPEN, MARKET_CLOSE = time(9, 0), time(14, 45)
 START_CMD = 'python python/stream_recorder.py --db "data/market.db" --minutes 105'
 
 
+def _in_trading_hours(now: datetime) -> bool:
+    t = now.time()
+    return now.weekday() < 5 and (time(9, 0) <= t <= time(11, 30) or time(13, 0) <= t <= MARKET_CLOSE)
+
+
 def ws_state(status: dict, now: datetime | None = None) -> dict:
-    """Trạng thái WebSocket suy ra từ dữ liệu đã lưu (bộ ghi chạy tiến trình riêng). level: ok | info | warn."""
+    """Trạng thái WebSocket suy ra từ dữ liệu đã lưu (bộ ghi chạy tiến trình riêng). level: ok | info | warn.
+    Chỉ báo 'Mất kết nối' khi hôm nay ĐÃ nhận bản tin rồi dừng giữa giờ giao dịch; nếu hôm nay chưa có bản tin nào
+    thì có thể bộ ghi chưa chạy hoặc sàn nghỉ (lễ) nên chỉ là thông tin, không cảnh báo."""
     now = now or datetime.now(TZ)
-    in_hours = now.weekday() < 5 and MARKET_OPEN <= now.time() <= MARKET_CLOSE
     if not status["available"]:
         return {"state": "Chưa khởi chạy", "level": "info",
                 "detail": "Chưa có luồng nào được lưu. Khởi chạy bộ ghi trong giờ giao dịch (9:00-14:45)."}
-    last = status["last"]
-    age = status["age_s"]
+    last, age = status["last"], status["age_s"]
     if age < 120:
         return {"state": "Đang nhận dữ liệu", "level": "ok", "detail": f"Bản tin gần nhất cách đây {int(age)} giây."}
-    if in_hours:
-        return {"state": "Mất kết nối", "level": "warn",
-                "detail": f"Đang trong giờ giao dịch nhưng không có bản tin mới từ {last:%H:%M:%S %d/%m} "
-                          "(bộ ghi đã dừng, mạng/phiên đăng nhập hết hạn hoặc chưa khởi chạy)."}
+    if _in_trading_hours(now):
+        if last.date() == now.date():
+            return {"state": "Mất kết nối", "level": "warn",
+                    "detail": f"Đang trong giờ giao dịch nhưng không có bản tin mới từ {last:%H:%M:%S %d/%m} "
+                              "(bộ ghi đã dừng, mạng/phiên đăng nhập hết hạn)."}
+        return {"state": "Chưa nhận dữ liệu hôm nay", "level": "info",
+                "detail": f"Hôm nay chưa có bản tin nào (lần cuối {last:%H:%M %d/%m}). Bộ ghi chưa chạy, "
+                          "hoặc hôm nay sàn nghỉ giao dịch thì là bình thường."}
     return {"state": "Đã dừng", "level": "info",
             "detail": f"Lần nhận cuối lúc {last:%H:%M:%S %d/%m/%Y}; ngoài giờ giao dịch nên không có luồng mới là bình thường."}
 
@@ -405,3 +414,135 @@ def top_pressure(press: pd.DataFrame, n: int = 12) -> tuple[pd.DataFrame, pd.Dat
     buy = press[press["rong"] > 0].sort_values("rong", ascending=False).head(n)
     sell = press[press["rong"] < 0].sort_values("rong").head(n)
     return buy, sell
+
+
+# ---------- diễn giải thị trường (phân tích thay vì liệt kê) ----------
+def pillar_note(key: str, m: dict) -> str:
+    """Một dòng giải thích cho thẻ trụ cột."""
+    if key == "trend":
+        if np.isnan(m["dist_sma50"]):
+            return "Chưa đủ dữ liệu SMA."
+        s = f"VN-Index {'trên' if m['dist_sma50'] >= 0 else 'dưới'} SMA50 {abs(m['dist_sma50']):.1f}%"
+        if not np.isnan(m["dist_sma200"]):
+            s += f", {'trên' if m['dist_sma200'] >= 0 else 'dưới'} SMA200 {abs(m['dist_sma200']):.1f}%"
+        return s + "."
+    if key == "breadth":
+        return f"{m['pct_above_50']:.0f}% mã đủ thanh khoản có giá trên SMA50."
+    if np.isnan(m["liq_vs_250"]):
+        return "Chưa đủ dữ liệu thanh khoản."
+    return f"Thanh khoản 20 phiên {'cao' if m['liq_vs_250'] >= 0 else 'thấp'} hơn {abs(m['liq_vs_250']):.0f}% so với trung vị 250 phiên."
+
+
+def interpret_market(m: dict) -> list[tuple[str, str]]:
+    """Diễn giải có điều kiện: từ tổ hợp ba trụ cột suy ra bối cảnh có thể xảy ra. Chỉ mô tả dữ liệu quá khứ,
+    dùng ngôn ngữ thận trọng, không đưa khuyến nghị mua/bán và không dự báo."""
+    t, b, lq = (m["pillars"][k]["value"] for k in ("trend", "breadth", "liquidity"))
+    out = [("Mức độ", f"Điểm {m['score']:.1f}/100 thuộc vùng **{m['regime']}**. Phân vị lịch sử {m['percentile']:.0f}% nghĩa là khoảng "
+                      f"{m['percentile']:.0f}% số phiên từ khi có đủ dữ liệu có điểm thấp hơn hoặc bằng hôm nay.")]
+    chg = "" if m["delta"] is None else f"So với phiên trước điểm {'tăng' if m['delta'] > 0 else 'giảm'} {abs(m['delta']):.1f}. "
+    out.append(("Diễn biến", chg + f"Trung bình 5 phiên gần nhất {m['trend_label']}; trạng thái {m['regime']} đã kéo dài {m['regime_run']} phiên. "
+                             "Điểm một phiên có nhiễu, nên đọc cùng xu hướng vài phiên."))
+    if t < 33 and b < 33:
+        cause = ("Yếu cả ở chỉ số lẫn độ rộng: không chỉ VN-Index mà đa số cổ phiếu đủ thanh khoản cũng nằm dưới đường trung bình. "
+                 "Đây là mức yếu mang tính diện rộng, khác với trường hợp chỉ vài mã lớn kéo chỉ số xuống.")
+    elif t >= 50 and b < 33:
+        cause = ("Chỉ số còn giữ được xu hướng nhưng ít cổ phiếu đi cùng (độ rộng kém). Tăng điểm kiểu này thường dựa vào một nhóm nhỏ cổ phiếu; "
+                 "đây là mô tả độ lan tỏa, không phải dự báo đảo chiều.")
+    elif t < 33 and b >= 50:
+        cause = "Nhiều cổ phiếu đang khá hơn chỉ số chung: độ rộng tốt hơn xu hướng của VN-Index, có thể do nhóm vốn hóa lớn đang kéo chỉ số."
+    elif min(t, b, lq) == lq and lq < 33:
+        cause = "Điểm thấp chủ yếu do thanh khoản; xu hướng và độ rộng chưa yếu bằng."
+    else:
+        cause = (f"Trụ cột thấp nhất là {min(m['pillars'].values(), key=lambda p: p['value'])['label']}; các trụ cột còn lại ở mức "
+                 "khá hơn nên điểm không bị kéo xuống đồng đều.")
+    out.append(("Nguyên nhân chính", cause))
+    lv = m["liq_vs_250"]
+    if not np.isnan(lv):
+        if lv < -20:
+            liq = (f"Thanh khoản thấp hơn bình thường khoảng {abs(lv):.0f}%: nhà đầu tư tham gia ít hơn hoặc thận trọng hơn. "
+                   "Thanh khoản thấp một mình chưa đủ để kết luận áp lực bán đã kết thúc; cần thêm tín hiệu về xu hướng và độ rộng.")
+        elif lv > 20 and m["regime"] == "Yếu":
+            liq = (f"Thanh khoản cao hơn bình thường khoảng {lv:.0f}% trong lúc thị trường yếu. Số liệu này không phân biệt được "
+                   "giữa bán mạnh và hoạt động mua vào ở vùng thấp.")
+        elif lv > 20 and m["regime"] == "Mạnh":
+            liq = f"Thanh khoản cao hơn bình thường khoảng {lv:.0f}%, phù hợp với trạng thái mạnh (đà tăng có sự tham gia của dòng tiền)."
+        else:
+            liq = f"Thanh khoản gần mức bình thường ({lv:+.0f}% so với trung vị 250 phiên) nên không phải yếu tố nổi bật."
+        out.append(("Thanh khoản", liq))
+    out.append(("Giới hạn", "Điểm mô tả trạng thái hiện tại so với lịch sử của chính thị trường. Khả năng của điểm trong việc dự báo lợi suất "
+                            "được kiểm chứng ở tab Kiểm chứng; không dùng điểm này một mình để ra quyết định mua/bán."))
+    return out
+
+
+# ---------- tóm tắt một cổ phiếu ----------
+IND_LABELS = {"trend_50": "Giá so với SMA50", "trend_200": "Giá so với SMA200", "mom_126_21": "Động lượng 126-21 phiên",
+              "rs_63": "Sức mạnh tương đối 63 phiên", "liq_med": "Thanh khoản (giá trị khớp trung vị)",
+              "vol_60": "Biến động 60 phiên (thấp là tốt)", "mdd_126": "Sụt giảm tối đa 126 phiên (nông là tốt)"}
+
+
+def indicator_percentiles(a: dict, asof, sym: str) -> pd.Series:
+    """Thứ hạng phần trăm (0-100, cao = tốt) của từng chỉ báo con của mã giữa các mã đủ điều kiện, cùng cách tính với điểm."""
+    el = a["eligible"].loc[asof]
+    out = {}
+    for k, lab in IND_LABELS.items():
+        row = a["factors"][k].loc[asof].where(el)
+        r = row.rank(pct=True)
+        out[lab] = float((1 - r[sym] if k == "vol_60" else r[sym]) * 100) if sym in r.index and pd.notna(r[sym]) else np.nan
+    return pd.Series(out)
+
+
+def stock_summary(a: dict, asof, sym: str, table: pd.DataFrame) -> dict:
+    """Kết luận đầu trang chi tiết một mã: điểm và hạng, xu hướng, sức mạnh tương đối, mức rủi ro và 3 chỉ báo mạnh/yếu nhất."""
+    row = table.loc[sym]
+    rank = int(table["score"].rank(ascending=False, method="min")[sym])
+    f = a["factors"]
+    t50, t200 = (float(f[k].loc[asof, sym]) if sym in f[k].columns else np.nan for k in ("trend_50", "trend_200"))
+    if np.isnan(t50) or np.isnan(t200):
+        trend = "chưa đủ dữ liệu"
+    elif t50 > 0 and t200 > 0:
+        trend = "tăng: giá trên cả SMA50 và SMA200"
+    elif t50 < 0 and t200 < 0:
+        trend = "giảm: giá dưới cả SMA50 và SMA200"
+    else:
+        trend = "lẫn lộn: giá " + ("trên SMA50, dưới SMA200" if t50 > 0 else "dưới SMA50, trên SMA200")
+    rs = float(row["rs_63_pp"])
+    risk = row["risk"]
+    risk_label = "thấp" if risk >= 67 else ("trung bình" if risk >= 33 else "cao")
+    pct = indicator_percentiles(a, asof, sym).dropna().sort_values(ascending=False)
+    return {"score": float(row["score"]), "rank": rank, "n": len(table), "trend": trend, "rs": rs,
+            "rs_label": "vượt" if rs >= 0 else "kém hơn", "risk_label": risk_label, "risk_score": float(risk),
+            "vol": float(row["vol_60_%"]), "mdd": float(row["mdd_126_%"]),
+            "top_pos": list(pct.head(3).items()), "top_neg": list(pct.tail(3).sort_values().items())}
+
+
+# ---------- điểm đáng chú ý trong phiên (streaming) ----------
+def stream_highlights(trades: pd.DataFrame, spike_x: float = 3.0, bin_min: int = 5) -> pd.DataFrame:
+    """Biến dữ liệu khớp lệnh thành vài sự kiện đọc được: (1) mã biến động giá nhiều nhất so với giá đầu tiên ghi được,
+    kèm thời điểm đạt cực trị; (2) cửa sổ `bin_min` phút có khối lượng ≥ `spike_x` lần trung vị các cửa sổ của chính mã đó.
+    Đây là mô tả thống kê đơn giản, không phải hệ thống cảnh báo."""
+    cols = ["ma", "loai", "thoi_diem", "chi_tiet", "do_lon"]
+    if trades.empty:
+        return pd.DataFrame(columns=cols)
+    t = trades.copy()
+    t["t"] = pd.to_datetime(t["recv_time"], errors="coerce")
+    t = t.dropna(subset=["t", "price"]).sort_values("t")
+    rows = []
+    for sym, g in t.groupby("symbol"):
+        base = g["price"].iloc[0]
+        if base > 0:
+            dev = g["price"] / base - 1
+            i = dev.abs().idxmax()
+            rows.append((sym, "Biến động giá", g.loc[i, "t"], f"{dev[i] * 100:+.2f}% so với giá khớp đầu tiên ({base:,.2f})", abs(dev[i]) * 100))
+        vol = g.set_index("t")["qty"].resample(f"{bin_min}min").sum()
+        vol = vol[vol > 0]
+        if len(vol) >= 6:
+            med = vol.median()
+            if med > 0 and vol.max() / med >= spike_x:
+                rows.append((sym, "Khối lượng đột biến", vol.idxmax(), f"{vol.max() / med:.1f} lần trung vị {bin_min} phút của mã ({vol.max():,.0f} cp)",
+                             vol.max() / med))
+    out = pd.DataFrame(rows, columns=["ma", "loai", "thoi_diem", "chi_tiet", "do_lon"])
+    if out.empty:
+        return out
+    top = pd.concat([out[out["loai"] == "Biến động giá"].nlargest(4, "do_lon"),
+                     out[out["loai"] == "Khối lượng đột biến"].nlargest(4, "do_lon")])
+    return top.sort_values("thoi_diem").reset_index(drop=True)

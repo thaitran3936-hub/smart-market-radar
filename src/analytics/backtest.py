@@ -74,6 +74,21 @@ def regime_forward_returns(health: pd.DataFrame, index_close: pd.Series, horizon
             "unconditional_mean": float(nonover["fwd"].mean()), "n_days": len(d)}
 
 
+def simple_trend_baseline(index_close: pd.Series, dates, horizon: int = 21, sma: int = 200) -> dict:
+    """Quy tắc đơn giản để so sánh với Market Health Score: VN-Index trên SMA200 = 'Trên SMA200', ngược lại = 'Dưới SMA200'.
+    Lợi suất VN-Index `horizon` phiên tới theo hai trạng thái (mẫu không chồng lấn) và hồi quy Newey-West trên biến 0/1.
+    Chỉ dùng các ngày trong `dates` (cùng khoảng thời gian với điểm thị trường) để so sánh công bằng."""
+    ma = index_close.rolling(sma).mean()
+    state = pd.Series(np.where(index_close > ma, "Trên SMA200", "Dưới SMA200"), index=index_close.index).where(ma.notna())
+    fwd = index_close.shift(-horizon) / index_close - 1
+    d = pd.DataFrame({"state": state, "fwd": fwd}).dropna()
+    d = d[d.index.isin(pd.DatetimeIndex(dates))]
+    non = d.iloc[::horizon]
+    tab = non.groupby("state")["fwd"].agg(n="count", mean="mean", median="median", pos=lambda x: (x > 0).mean())
+    reg = newey_west_slope(d["fwd"].to_numpy(), (d["state"] == "Trên SMA200").astype(float).to_numpy(), lags=horizon)
+    return {"table": tab.reindex(["Dưới SMA200", "Trên SMA200"]), "regression": reg, "n_days": len(d)}
+
+
 # ---------- backtest điểm cổ phiếu ----------
 def month_end_signal_dates(index: pd.DatetimeIndex, start: str) -> list:
     s = pd.Series(index, index=index)

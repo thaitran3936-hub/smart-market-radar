@@ -31,6 +31,7 @@ st.set_page_config(page_title="Smart Market Radar", page_icon="📡", layout="wi
 DB = config.DB_PATH
 REGIME_COLOR = {"Yếu": "#e5484d", "Trung tính": "#d9a441", "Mạnh": "#2fa36b", "Chưa đủ dữ liệu": "#888888"}
 THRESHOLDS = {"500 triệu": 5e8, "1 tỷ (mặc định)": 1e9, "5 tỷ": 5e9}
+MOM_ONLY = {"trend": 0, "momentum": 1, "liquidity": 0, "risk": 0}   # bộ sàng lọc đơn giản để so sánh
 GROUPS = (("trend", "Xu hướng"), ("momentum", "Động lượng"), ("liquidity", "Thanh khoản"), ("risk", "Rủi ro thấp"))
 
 
@@ -78,7 +79,12 @@ def get_backtest(path: str, sig, min_value: float, top_frac: float, cost_bps: fl
                             top_frac=top_frac, cost_bps=cost_bps)
     ic = bt.information_coefficient(p.close, p.index_close, a["eligible"], a["factors"])
     rel = bt.summarize_relation(bt.relation_analysis(p.close, p.index_close, a["eligible"], a["factors"], a["health"]))
-    return {"bt": res, "ic": ic, "regime5": bt.regime_forward_returns(a["health"], p.index_close, 5),
+    mom = bt.stock_backtest(p.close, p.index_close, a["eligible"], a["factors"], a["health"], weights=MOM_ONLY,
+                            top_frac=top_frac, cost_bps=cost_bps)
+    mom_ic = bt.information_coefficient(p.close, p.index_close, a["eligible"], a["factors"], weights=MOM_ONLY)
+    return {"bt": res, "mom": mom, "mom_ic": mom_ic,
+            "trend_base": bt.simple_trend_baseline(p.index_close, a["health"]["score"].dropna().index, 21),
+            "ic": ic, "regime5": bt.regime_forward_returns(a["health"], p.index_close, 5),
             "regime21": bt.regime_forward_returns(a["health"], p.index_close, 21), "relation": rel,
             "params": (min_value, top_frac, cost_bps)}
 
@@ -161,6 +167,9 @@ with st.sidebar:
     last_day = health.index[-1].date()
     asof = pd.Timestamp(st.date_input("Ngày phân tích", value=last_day, min_value=health.index[0].date(), max_value=last_day))
     asof = health.index[health.index <= asof][-1]
+    mode = st.radio("Mức hiển thị", ["Tổng quan", "Phân tích chuyên sâu"], help="Tổng quan: kết luận và dấu hiệu cần theo dõi. "
+                    "Phân tích chuyên sâu: thêm công thức, chỉ báo chi tiết, dữ liệu kiểm chứng.")
+    deep = mode == "Phân tích chuyên sâu"
     horizon = st.radio("Khoảng thời gian biểu đồ", ["1 năm", "3 năm", "5 năm", "Tất cả"], index=1, horizontal=True)
     st.caption("Bộ lọc sàn, ngành, thanh khoản và trọng số nằm ở tab Xếp hạng cổ phiếu.")
 years = {"1 năm": 1, "3 năm": 3, "5 năm": 5}.get(horizon)
@@ -200,33 +209,39 @@ tabs = st.tabs(["Thị trường", "Xếp hạng cổ phiếu", "Realtime Monito
 with tabs[0]:
     M = sv.market_summary(A, asof)
     st.subheader(f"Thị trường đang mạnh, trung tính hay yếu? — {asof:%d/%m/%Y}")
-    g1, g2, g3 = st.columns([1.1, 1.3, 1.1])
+    dl = M["delta"]
+    g1, g2 = st.columns([1.2, 1.8])
     with g1.container(border=True):
         st.markdown("**Market Health Score**")
         show(gauge(M["score"], M["regime"]))
-        st.markdown(f"<div style='text-align:center;font-size:1.3rem;font-weight:700;color:{REGIME_COLOR[M['regime']]}'>"
-                    f"{M['regime']}</div>", unsafe_allow_html=True)
-        st.caption(f"So với phiên trước: **{sign(M['delta'])} điểm** · Phân vị lịch sử: **{M['percentile']:.0f}%** · "
-                   f"Điểm 5 phiên gần nhất: **{M['trend_label']}**")
-    with g2.container(border=True):
-        st.markdown("**Ba trụ cột và đóng góp vào điểm tổng** (mỗi trụ cột 1/3)")
-        for k, lab in sv.PILLARS:
+        arrow = "▲" if (dl or 0) > 0 else ("▼" if (dl or 0) < 0 else "■")
+        st.markdown(f"<div style='text-align:center;font-size:1.6rem;font-weight:800;color:{REGIME_COLOR[M['regime']]}'>"
+                    f"{M['regime']} · {arrow} {sign(dl)} điểm so với phiên trước</div>", unsafe_allow_html=True)
+        st.caption(f"Phân vị lịch sử {M['percentile']:.0f}% · 5 phiên gần nhất: **{M['trend_label']}** · "
+                   f"đã ở trạng thái {M['regime']} {M['regime_run']} phiên")
+    with g2:
+        pcols = st.columns(3)
+        for col, (k, lab) in zip(pcols, sv.PILLARS):
             pl = M["pillars"][k]
-            a_, b_ = st.columns([3, 2])
-            a_.metric(lab, f"{pl['value']:.0f} / 100", None if pl["delta"] is None else f"{pl['delta']:+.0f} so với phiên trước")
-            b_.metric("Đóng góp", f"{pl['contribution']:.1f} / 33,3")
-    with g3.container(border=True):
-        st.markdown("**VN-Index**")
-        st.metric("Điểm đóng cửa", f"{M['index_close']:,.1f}", sign(M["index_chg"], 2, "%"))
-        st.caption(f"Cách SMA50: **{sign(M['dist_sma50'], 1, '%')}** · cách SMA200: **{sign(M['dist_sma200'], 1, '%')}**")
-        st.caption(f"Độ dốc SMA50 (20 phiên): **{sign(M['sma50_slope'], 1, '%')}** · "
-                   f"Thanh khoản 20 phiên so với trung vị 250 phiên: **{sign(M['liq_vs_250'], 0, '%')}**")
+            with col.container(border=True):
+                st.metric(lab, f"{pl['value']:.0f} / 100", None if pl["delta"] is None else f"{pl['delta']:+.0f} so với phiên trước")
+                st.caption(sv.pillar_note(k, M))
+        with st.container(border=True):
+            v1, v2 = st.columns([1, 2])
+            v1.metric("VN-Index", f"{M['index_close']:,.1f}", sign(M["index_chg"], 2, "%"))
+            v2.caption(f"Cách SMA50: **{sign(M['dist_sma50'], 1, '%')}** · cách SMA200: **{sign(M['dist_sma200'], 1, '%')}** · "
+                       f"độ dốc SMA50 (20 phiên): **{sign(M['sma50_slope'], 1, '%')}**")
+            v2.caption("Điểm = trung bình 3 trụ cột (mỗi trụ cột 1/3), mỗi trụ cột là phân vị so với lịch sử thị trường.")
+    st.markdown("#### Vì sao điểm như vậy?")
     with st.container(border=True):
-        st.markdown("**Vì sao điểm như vậy?**")
-        for line in sv.explain_market(M):
-            st.markdown("- " + line)
-        st.caption("Điểm là phân vị so với lịch sử của chính thị trường tính đến ngày đó; mô tả trạng thái, không phải dự báo "
-                   "hay khuyến nghị mua bán.")
+        show_keys = None if deep else {"Mức độ", "Nguyên nhân chính", "Thanh khoản", "Giới hạn"}
+        for title, body in sv.interpret_market(M):
+            if show_keys is None or title in show_keys:
+                st.markdown(f"**{title}.** {body}")
+        if deep:
+            st.markdown("**Các ý ngắn:**")
+            for line in sv.explain_market(M):
+                st.markdown("- " + line)
 
     h = health.loc[(health.index >= start) & (health.index <= asof)]
     full = A["panel"].index_close.dropna()
@@ -238,67 +253,71 @@ with tabs[0]:
         s_ = s_[(s_.index >= start) & (s_.index <= asof)]
         fig.add_trace(go.Scatter(x=s_.index, y=s_, name=f"SMA{n}", line=dict(width=1.2, dash=dash)))
     show(style(fig, "VN-Index, SMA50 và SMA200", 340))
-    iv = A["panel"].index_value.dropna()
-    iv = iv[(iv.index >= start) & (iv.index <= asof)]
-    if len(iv):
-        figv = go.Figure(go.Bar(x=iv.index, y=iv / 1e9, name="Giá trị khớp (tỷ đồng)"))
-        figv.add_trace(go.Scatter(x=iv.index, y=iv.rolling(20).median() / 1e9, name="Trung vị 20 phiên", line=dict(width=2)))
-        show(style(figv, "Giá trị giao dịch của thị trường (tỷ đồng/phiên)", 220))
+    st.markdown("#### Dữ liệu chi tiết để kiểm chứng")
+    with st.expander("Biểu đồ thanh khoản, ba trụ cột theo thời gian, độ rộng và đối chiếu số liệu sàn", expanded=deep):
+        iv = A["panel"].index_value.dropna()
+        iv = iv[(iv.index >= start) & (iv.index <= asof)]
+        if len(iv):
+            figv = go.Figure(go.Bar(x=iv.index, y=iv / 1e9, name="Giá trị khớp (tỷ đồng)"))
+            figv.add_trace(go.Scatter(x=iv.index, y=iv.rolling(20).median() / 1e9, name="Trung vị 20 phiên", line=dict(width=2)))
+            show(style(figv, "Giá trị giao dịch của thị trường (tỷ đồng/phiên)", 220))
 
-    st.markdown("**Ba trụ cột theo thời gian**")
-    pc = st.columns(3)
-    for col, (k, lab) in zip(pc, sv.PILLARS):
-        f_ = go.Figure()
-        f_.add_hrect(y0=0, y1=mh.LOW, fillcolor=REGIME_COLOR["Yếu"], opacity=0.10, line_width=0)
-        f_.add_hrect(y0=mh.HIGH, y1=100, fillcolor=REGIME_COLOR["Mạnh"], opacity=0.10, line_width=0)
-        f_.add_trace(go.Scatter(x=h.index, y=h[k], name=lab, line=dict(width=1.6)))
-        f_.update_layout(showlegend=False, yaxis=dict(range=[0, 100]))
-        with col:
-            show(style(f_, f"{lab} (0-100)", 240))
-    with st.expander("Biểu đồ tổng hợp (bật/tắt từng đường)"):
-        lines = {"Điểm tổng": "score", "Xu hướng": "trend", "Độ rộng": "breadth", "Thanh khoản": "liquidity"}
-        chosen = st.multiselect("Đường hiển thị", list(lines), default=["Điểm tổng"])
-        f2 = go.Figure()
-        f2.add_hrect(y0=0, y1=mh.LOW, fillcolor=REGIME_COLOR["Yếu"], opacity=0.08, line_width=0)
-        f2.add_hrect(y0=mh.HIGH, y1=100, fillcolor=REGIME_COLOR["Mạnh"], opacity=0.08, line_width=0)
-        for name in chosen or []:
-            f2.add_trace(go.Scatter(x=h.index, y=h[lines[name]], name=name, line=dict(width=3 if name == "Điểm tổng" else 1.2)))
-        show(style(f2, f"Điểm theo thời gian (đỏ < {mh.LOW:.0f}: Yếu, xanh > {mh.HIGH:.0f}: Mạnh)", 320, yaxis=dict(range=[0, 100])))
+        st.markdown("**Ba trụ cột theo thời gian**")
+        pc = st.columns(3)
+        for col, (k, lab) in zip(pc, sv.PILLARS):
+            f_ = go.Figure()
+            f_.add_hrect(y0=0, y1=mh.LOW, fillcolor=REGIME_COLOR["Yếu"], opacity=0.10, line_width=0)
+            f_.add_hrect(y0=mh.HIGH, y1=100, fillcolor=REGIME_COLOR["Mạnh"], opacity=0.10, line_width=0)
+            f_.add_trace(go.Scatter(x=h.index, y=h[k], name=lab, line=dict(width=1.6)))
+            f_.update_layout(showlegend=False, yaxis=dict(range=[0, 100]))
+            with col:
+                show(style(f_, f"{lab} (0-100)", 240))
+        st.markdown("**Biểu đồ tổng hợp (chọn đường hiển thị)**")
+        if True:
+            lines = {"Điểm tổng": "score", "Xu hướng": "trend", "Độ rộng": "breadth", "Thanh khoản": "liquidity"}
+            chosen = st.multiselect("Đường hiển thị", list(lines), default=["Điểm tổng"])
+            f2 = go.Figure()
+            f2.add_hrect(y0=0, y1=mh.LOW, fillcolor=REGIME_COLOR["Yếu"], opacity=0.08, line_width=0)
+            f2.add_hrect(y0=mh.HIGH, y1=100, fillcolor=REGIME_COLOR["Mạnh"], opacity=0.08, line_width=0)
+            for name in chosen or []:
+                f2.add_trace(go.Scatter(x=h.index, y=h[lines[name]], name=name, line=dict(width=3 if name == "Điểm tổng" else 1.2)))
+            show(style(f2, f"Điểm theo thời gian (đỏ < {mh.LOW:.0f}: Yếu, xanh > {mh.HIGH:.0f}: Mạnh)", 320, yaxis=dict(range=[0, 100])))
 
-    st.markdown("**Độ rộng thị trường**")
-    bc = A["breadth_counts"]
-    bnow = bc.loc[:asof].iloc[-1]
-    b1, b2, b3, b4 = st.columns(4)
-    b1.metric("Số mã tăng", f"{int(bnow['tang'])}")
-    b2.metric("Số mã giảm", f"{int(bnow['giam'])}")
-    b3.metric("Số mã đứng giá", f"{int(bnow['dung_gia'])}",
-              help="Giá đóng cửa không đổi, gồm cả mã không khớp lệnh trong phiên.")
-    b4.metric("% mã trên SMA50", f"{M['pct_above_50']:.0f}%")
-    bw = bc[(bc.index >= start) & (bc.index <= asof)]
-    d1, d2 = st.columns(2)
-    if len(bw):
-        fa = go.Figure(go.Scatter(x=bw.index, y=bw["ad_line"] - bw["ad_line"].iloc[0], name="A/D tích lũy", line=dict(width=2)))
-        with d1:
-            show(style(fa, "Đường Advance/Decline (tích lũy tăng − giảm, gốc 0 tại đầu kỳ)", 280))
-        fb = go.Figure(go.Scatter(x=h.index, y=h["pct_above_50"], name="% trên SMA50", fill="tozeroy"))
-        with d2:
-            show(style(fb, "% mã đủ thanh khoản có giá trên SMA50", 280, yaxis=dict(range=[0, 100])))
-    st.caption(f"Phạm vi: các mã đủ thanh khoản (trung vị giá trị khớp 60 phiên ≥ {th_label}, giao dịch ≥ 80% số phiên) — "
-               f"{int(bnow['tong'])} mã hôm nay. Mã tăng: đóng cửa > phiên trước; giảm: <; đứng giá: bằng nhau. "
-               "Mã thiếu giá hoặc bị gắn cờ lỗi giá không được tính. Để tiết kiệm bộ nhớ, chỉ nạp các mã có thể đủ thanh khoản ở ngưỡng đang chọn.")
+        st.markdown("**Độ rộng thị trường**")
+        bc = A["breadth_counts"]
+        bnow = bc.loc[:asof].iloc[-1]
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Số mã tăng", f"{int(bnow['tang'])}")
+        b2.metric("Số mã giảm", f"{int(bnow['giam'])}")
+        b3.metric("Số mã đứng giá", f"{int(bnow['dung_gia'])}",
+                  help="Giá đóng cửa không đổi, gồm cả mã không khớp lệnh trong phiên.")
+        b4.metric("% mã trên SMA50", f"{M['pct_above_50']:.0f}%")
+        bw = bc[(bc.index >= start) & (bc.index <= asof)]
+        d1, d2 = st.columns(2)
+        if len(bw):
+            fa = go.Figure(go.Scatter(x=bw.index, y=bw["ad_line"] - bw["ad_line"].iloc[0], name="A/D tích lũy", line=dict(width=2)))
+            with d1:
+                show(style(fa, "Đường Advance/Decline (tích lũy tăng − giảm, gốc 0 tại đầu kỳ)", 280))
+            fb = go.Figure(go.Scatter(x=h.index, y=h["pct_above_50"], name="% trên SMA50", fill="tozeroy"))
+            with d2:
+                show(style(fb, "% mã đủ thanh khoản có giá trên SMA50", 280, yaxis=dict(range=[0, 100])))
+        st.caption(f"Phạm vi: các mã đủ thanh khoản (trung vị giá trị khớp 60 phiên ≥ {th_label}, giao dịch ≥ 80% số phiên) — "
+                   f"{int(bnow['tong'])} mã hôm nay. Mã tăng: đóng cửa > phiên trước; giảm: <; đứng giá: bằng nhau. "
+                   "Mã thiếu giá hoặc bị gắn cờ lỗi giá không được tính. Để tiết kiệm bộ nhớ, chỉ nạp các mã có thể đủ thanh khoản ở ngưỡng đang chọn.")
 
-    chk = sv.breadth_crosscheck(con, A)
-    with st.expander("Đối chiếu độ rộng tự tính với số liệu chính thức của sàn (indexSummary lưu mỗi ngày)"):
-        if chk.empty:
-            st.info("Chưa có ảnh chụp indexSummary. Chạy `python -m src.data.collector --snapshot` hoặc cập nhật hằng ngày; "
-                    "SSI không lưu lịch sử nên số liệu này chỉ tích lũy từ ngày bắt đầu lưu.")
-        else:
-            st.dataframe(chk.round(1).rename(columns={"tang_chinh_thuc": "Tăng (chính thức)", "giam_chinh_thuc": "Giảm (chính thức)",
-                                                      "chinh_thuc": "% tăng chính thức", "tu_tinh": "% tăng tự tính",
-                                                      "chenh_lech": "Chênh lệch (điểm %)"})[
-                ["Tăng (chính thức)", "Giảm (chính thức)", "% tăng chính thức", "% tăng tự tính", "Chênh lệch (điểm %)"]],
-                use_container_width=True)
-            st.caption("Tự tính chỉ dùng các mã cùng sàn đủ thanh khoản ở ngưỡng đang chọn, còn số chính thức tính mọi mã; chênh lệch nhỏ là bình thường.")
+        chk = sv.breadth_crosscheck(con, A)
+        st.markdown("**Đối chiếu độ rộng tự tính với số liệu chính thức của sàn (indexSummary lưu mỗi ngày)**")
+        if True:
+            if chk.empty:
+                st.info("Chưa có ảnh chụp indexSummary. Chạy `python -m src.data.collector --snapshot` hoặc cập nhật hằng ngày; "
+                        "SSI không lưu lịch sử nên số liệu này chỉ tích lũy từ ngày bắt đầu lưu.")
+            else:
+                st.dataframe(chk.round(1).rename(columns={"tang_chinh_thuc": "Tăng (chính thức)", "giam_chinh_thuc": "Giảm (chính thức)",
+                                                          "chinh_thuc": "% tăng chính thức", "tu_tinh": "% tăng tự tính",
+                                                          "chenh_lech": "Chênh lệch (điểm %)"})[
+                    ["Tăng (chính thức)", "Giảm (chính thức)", "% tăng chính thức", "% tăng tự tính", "Chênh lệch (điểm %)"]],
+                    use_container_width=True)
+                st.caption("Tự tính chỉ dùng các mã cùng sàn đủ thanh khoản ở ngưỡng đang chọn, còn số chính thức tính mọi mã; chênh lệch nhỏ là bình thường.")
 
 # ===== Tab 2: xếp hạng cổ phiếu =====
 with tabs[1]:
@@ -338,13 +357,22 @@ with tabs[1]:
                      "score": "Điểm", "vol_60_%": "Biến động 60p (%/năm)", "mdd_126_%": "Sụt giảm tối đa 126p (%)",
                      "mom_126_21_%": "Động lượng 126-21p (%)", "rs_63_pp": "RS 63p so với VN-Index (điểm %)",
                      "liq_median_ty": "GT khớp TV (tỷ/phiên)", "board": "Sàn", "name_vi": "Tên", "icb_name": "Ngành"}
-            sc1, sc2, sc3 = st.columns([2, 1, 2])
-            core = ["Sàn", "Ngành", "Điểm", "Xu hướng", "Động lượng", "Thanh khoản", "Rủi ro thấp (cao = tốt)"]
-            more = sc3.checkbox("Hiện thêm chỉ báo chi tiết", False)
-            extra = ["Tên", "Biến động 60p (%/năm)", "Sụt giảm tối đa 126p (%)", "Động lượng 126-21p (%)",
-                     "RS 63p so với VN-Index (điểm %)", "GT khớp TV (tỷ/phiên)"]
-            shown_cols = core + (extra if more else [])
-            sort_by = sc1.selectbox("Sắp xếp theo", [c for c in shown_cols if c not in ("Sàn", "Ngành", "Tên")], index=0)
+            bq_all = sv.cross_beta(A, asof, list(table.index))
+            table = table.assign(beta=bq_all.reindex(table.index))
+            names["beta"] = "Beta (120p)"
+            col_groups = {
+                "Nhận diện": ["Tên", "Sàn", "Ngành"],
+                "Đánh giá": ["Điểm", "Xu hướng", "Động lượng"] + (["Động lượng 126-21p (%)"] if deep else []),
+                "Khả năng giao dịch": ["Thanh khoản", "GT khớp TV (tỷ/phiên)"],
+                "Rủi ro": ["Rủi ro thấp (cao = tốt)", "Biến động 60p (%/năm)", "Sụt giảm tối đa 126p (%)"],
+                "So với thị trường": ["RS 63p so với VN-Index (điểm %)", "Beta (120p)"]}
+            sc1, sc2, sc3 = st.columns([2, 1, 3])
+            chosen_g = sc3.multiselect("Nhóm cột hiển thị", list(col_groups),
+                                       default=list(col_groups) if deep else ["Nhận diện", "Đánh giá", "So với thị trường"],
+                                       key=f"grp_{deep}", help="Ẩn/hiện từng nhóm; dữ liệu đầy đủ vẫn có trong tệp CSV tải về.")
+            shown_cols = [c for g in col_groups if g in chosen_g for c in col_groups[g]] or col_groups["Đánh giá"]
+            sort_opts = [c for c in shown_cols if c not in ("Sàn", "Ngành", "Tên")] or ["Điểm"]
+            sort_by = sc1.selectbox("Sắp xếp theo", sort_opts, index=sort_opts.index("Điểm") if "Điểm" in sort_opts else 0)
             top_n = sc2.slider("Số dòng", 10, 100, 20, 5)
             ren = table.rename(columns=names).rename_axis("Mã")
             ren = ren.sort_values(sort_by, ascending=False)
@@ -352,9 +380,10 @@ with tabs[1]:
             cfg = {"Điểm": st.column_config.ProgressColumn("Điểm", min_value=0, max_value=100, format="%.1f")}
             for c in shown_cols:
                 if c not in ("Sàn", "Ngành", "Tên", "Điểm"):
-                    cfg[c] = st.column_config.NumberColumn(c, format="%.1f")
+                    cfg[c] = st.column_config.NumberColumn(c, format="%.2f" if c.startswith("Beta") else "%.1f")
             st.caption(f"{len(table)} mã thỏa bộ lọc; hiển thị {len(view)}. Bấm vào một dòng để xem chi tiết bên dưới. "
-                       "**Điểm Rủi ro thấp: cao = rủi ro THẤP (tốt)**; mọi điểm nhóm đều theo hướng 'cao = tốt'.")
+                       "**Điểm Rủi ro thấp: cao = rủi ro THẤP (tốt)**; mọi điểm nhóm đều theo hướng 'cao = tốt'. "
+                       "Điểm là thứ hạng so với các mã khác, không phải lợi suất kỳ vọng.")
             sel_sym = None
             try:
                 ev = st.dataframe(view, use_container_width=True, hide_index=True, column_config=cfg,
@@ -370,6 +399,10 @@ with tabs[1]:
             # ---- đóng góp của các nhóm vào điểm ----
             wn = {k: v / sum(w.values()) for k, v in w.items()}
             top15 = table.sort_values("score", ascending=False).head(15)
+            st.markdown("#### Điểm của mỗi mã đến từ đâu?")
+            st.info("**Cách đọc:** mỗi cột là một mã; mỗi màu là một nhóm chỉ báo (xu hướng, động lượng, thanh khoản, rủi ro thấp). "
+                    "Độ dài đoạn màu = điểm nhóm (0-100, đã chuẩn hóa theo thứ hạng) × trọng số. **Đây không phải tỷ trọng vốn "
+                    "hay tỷ suất lợi nhuận**; tổng các đoạn bằng điểm tổng của mã.")
             fig = go.Figure()
             for k, lab in GROUPS:
                 fig.add_trace(go.Bar(x=top15.index, y=top15[k] * wn[k], name=lab, text=(top15[k] * wn[k]).round(1),
@@ -379,11 +412,16 @@ with tabs[1]:
                        "khi trọng số bằng nhau, mỗi nhóm đóng góp tối đa 25 điểm.")
 
             # ---- Beta - RS ----
-            bq = sv.cross_beta(A, asof, list(table.index)).dropna()
+            bq = bq_all.dropna()
             sel_ready = list(view["Mã"])
             sym = st.selectbox("Mã cần xem chi tiết (hoặc bấm vào dòng trong bảng)", sel_ready,
                                index=sel_ready.index(sel_sym) if sel_sym in sel_ready else 0)
             if len(bq) > 5:
+                st.markdown("#### Cổ phiếu nào mạnh hơn thị trường, và biến động ra sao?")
+                st.info("**Cách dùng biểu đồ (mô tả dữ liệu quá khứ, không phải dự báo):**\n"
+                        "- **Beta < 1, RS > 0** (góc trên trái): mạnh hơn VN-Index trong 63 phiên gần nhất và dao động ít hơn thị trường.\n"
+                        "- **Beta > 1, RS > 0** (góc trên phải): mạnh hơn VN-Index nhưng dao động lớn hơn thị trường.\n"
+                        "- **RS < 0** (nửa dưới): kém hơn VN-Index trong kỳ đo. Màu càng sáng là điểm tổng càng cao.")
                 min_sc = st.slider("Chỉ vẽ các mã có điểm tổng từ", 0, 100, 0, 5)
                 q = table.loc[bq.index]
                 q = q[q["score"] >= min_sc]
@@ -422,11 +460,27 @@ with tabs[1]:
             row_ = table.loc[sym]
             info_ = [row_.get(k) for k in ("name_vi", "board", "icb_name")]
             st.caption(" · ".join(str(v) for v in info_ if isinstance(v, str) and v))
+            full_tab = sv.rank_table(A, asof, w, None, meta)
+            SS = sv.stock_summary(A, asof, sym, full_tab)
+            with st.container(border=True):
+                st.markdown("**Kết luận nhanh**")
+                q1, q2, q3, q4 = st.columns(4)
+                q1.metric("Điểm tổng", f"{SS['score']:.1f}", f"hạng {SS['rank']} / {SS['n']} mã đủ điều kiện", delta_color="off")
+                q2.markdown(f"**Xu hướng hiện tại**  \n{SS['trend']}")
+                q3.metric("So với VN-Index (63 phiên)", f"{SS['rs']:+.1f} điểm %", f"{SS['rs_label']} thị trường", delta_color="off")
+                q4.metric("Mức rủi ro", SS["risk_label"], f"biến động {SS['vol']:.0f}%/năm · sụt giảm {SS['mdd']:.0f}%", delta_color="off")
+                pcol, ncol = st.columns(2)
+                pcol.markdown("**3 yếu tố đóng góp tích cực nhất** (thứ hạng giữa các mã)")
+                for lab, v in SS["top_pos"]:
+                    pcol.markdown(f"- {lab}: top {100 - v:.0f}%")
+                ncol.markdown("**3 yếu tố đóng góp tiêu cực nhất**")
+                for lab, v in SS["top_neg"]:
+                    ncol.markdown(f"- {lab}: top {100 - v:.0f}%")
+                st.caption("Mô tả vị thế của mã so với các mã đủ điều kiện, không phải dự báo hay khuyến nghị.")
             cc = pd.DataFrame({"Điểm nhóm (0-100)": [row_[k] for k, _ in GROUPS], "Trọng số": [wn[k] for k, _ in GROUPS],
                                "Đóng góp vào điểm tổng": [row_[k] * wn[k] for k, _ in GROUPS]},
                               index=[lab for _, lab in GROUPS])
             d_a, d_b = st.columns([2, 3])
-            d_a.metric("Điểm tổng", f"{row_['score']:.1f}")
             d_a.dataframe(cc.round(2), use_container_width=True)
             px_ = A["panel"].close[sym].dropna()
             px_ = px_[(px_.index >= start) & (px_.index <= asof)]
@@ -453,7 +507,9 @@ with tabs[1]:
                 st.markdown(f"**{sym} hành xử thế nào theo trạng thái thị trường?** (phiên được phân loại theo trạng thái của "
                             "phiên TRƯỚC, nên không dùng thông tin chưa biết)")
                 reg_tab = sv.stock_by_regime(A, sym, asof)
-                if reg_tab.empty:
+                if not deep:
+                    st.caption("Bảng chi tiết theo trạng thái thị trường có ở mức hiển thị **Phân tích chuyên sâu** (thanh bên).")
+                elif reg_tab.empty:
                     st.info("Chưa đủ dữ liệu để phân tích theo trạng thái thị trường.")
                 else:
                     st.dataframe(reg_tab.rename(columns={
@@ -470,27 +526,43 @@ with tabs[2]:
     st.subheader("Realtime Monitor — dữ liệu WebSocket SSI đã lưu")
     box = {"ok": st.success, "info": st.info, "warn": st.warning}[ws["level"]]
     box(f"**{ws['state']}.** {ws['detail']}")
-    st.caption("Bộ ghi streaming chạy như một tiến trình riêng và lưu vào bảng `stream_raw`; trang này đọc dữ liệu đã lưu. "
-               "Số bản tin nhận nhưng không lưu (vd. bảng giá bid/ask) chỉ hiện trong cửa sổ lệnh của bộ ghi.")
+    st.caption("Ba trạng thái được phân biệt: **Mất kết nối** (đang trong giờ giao dịch hôm nay nhưng bản tin cuối đã quá cũ), "
+               "**Đã dừng ghi / chưa ghi** (ngoài giờ giao dịch, nghỉ lễ hoặc chưa chạy bộ ghi) và **Đang ghi**. Trang này chỉ đọc cơ sở "
+               "dữ liệu nên không quan sát được trạng thái “đang kết nối lại” của tiến trình ghi; trạng thái đó chỉ hiện trong cửa sổ lệnh "
+               "của bộ ghi. Mọi thời điểm hiển thị theo giờ Việt Nam (UTC+7).")
     with st.expander("Cách khởi chạy bộ ghi", expanded=not ss_status["available"]):
         st.code(sv.START_CMD, language="bash")
         st.caption("Chạy trong thư mục repo mẫu của SSI (có `python/stream_recorder.py`), giờ giao dịch 9:00-11:30 và 13:00-14:45. "
                    "Có thể cần duyệt Smart OTP trên điện thoại. Chỉ SUBSCRIBE dữ liệu thị trường, không đặt lệnh.")
     if ss_status["available"]:
         st.markdown(f"**Đã ghi {ss_status['sessions']} phiên, {ss_status['rows']:,} bản tin.**")
-        st.dataframe(ss_status["by_day"].rename(columns={"ngay": "Ngày", "dong": "Số bản tin", "tu": "Bản tin đầu", "den": "Bản tin cuối"}),
-                     use_container_width=True, hide_index=True)
+        if deep:
+            st.dataframe(ss_status["by_day"].rename(columns={"ngay": "Ngày", "dong": "Số bản tin", "tu": "Bản tin đầu", "den": "Bản tin cuối"}),
+                         use_container_width=True, hide_index=True)
         day = st.selectbox("Chọn phiên", list(ss_status["by_day"]["ngay"])[::-1])
         trades, press, foreign, cross, counts = get_stream_day(DB, sig, day)
         k1, k2, k3 = st.columns(3)
         k1.metric("Bản tin đã lưu trong phiên", f"{int(counts['so_ban_tin'].sum()):,}")
         k2.metric("Bản tin đầu (thời điểm bắt đầu ghi)", counts["dau"].min()[11:19] if len(counts) else "—")
         k3.metric("Bản tin cuối", counts["cuoi"].max()[11:19] if len(counts) else "—")
-        st.dataframe(counts.rename(columns={"loai": "Loại bản tin", "so_ban_tin": "Số bản tin đã lưu", "dau": "Đầu", "cuoi": "Cuối"}),
-                     use_container_width=True, hide_index=True)
+        if deep:
+            st.dataframe(counts.rename(columns={"loai": "Loại bản tin", "so_ban_tin": "Số bản tin đã lưu", "dau": "Đầu", "cuoi": "Cuối"}),
+                         use_container_width=True, hide_index=True)
         if trades.empty:
             st.info("Phiên này không có bản tin khớp lệnh.")
         else:
+            hl = sv.stream_highlights(trades)
+            with st.container(border=True):
+                st.markdown("**Điểm đáng chú ý trong phiên**")
+                if hl.empty:
+                    st.info("Không có mã nào biến động giá hoặc khối lượng đủ lớn theo ngưỡng mô tả bên dưới.")
+                else:
+                    st.dataframe(hl.assign(thoi_diem=hl["thoi_diem"].dt.strftime("%H:%M:%S"))[["thoi_diem", "ma", "loai", "chi_tiet"]].rename(
+                        columns={"thoi_diem": "Thời điểm", "ma": "Mã", "loai": "Loại", "chi_tiet": "Chi tiết"}),
+                        use_container_width=True, hide_index=True)
+                st.caption("Biến động giá: mã có thay đổi lớn nhất so với giá khớp đầu tiên bộ ghi nhận được (kèm lúc đạt cực trị). "
+                           "Khối lượng đột biến: cửa sổ 5 phút có khối lượng ≥ 3 lần trung vị của chính mã đó. Chỉ là thống kê mô tả trên "
+                           "các mã đang theo dõi, không phải cảnh báo hay tín hiệu giao dịch.")
             wl = sv.stream_watchlist(trades)
             st.markdown(f"**Danh sách mã đang theo dõi ({len(wl)} mã):** {', '.join(wl.index)}")
             st.dataframe(wl.rename(columns={"gia_cuoi": "Giá khớp gần nhất", "gia_dau_ghi": "Giá khớp đầu tiên ghi được",
@@ -536,8 +608,10 @@ with tabs[2]:
                 st.info("Chưa có dữ liệu để đối chiếu.")
             else:
                 st.write(cross["ket_luan"].value_counts().to_dict())
-                st.dataframe(cross.round(2), use_container_width=True, hide_index=True)
-                st.caption("Chỉ so sánh khi bộ ghi chạy tới cuối phiên (bản tin cuối ≥ 14:40); ngược lại ghi “chưa ghi hết phiên”.")
+                if deep:
+                    st.dataframe(cross.round(2), use_container_width=True, hide_index=True)
+                st.caption("Chỉ so sánh khi bộ ghi chạy tới cuối phiên (bản tin cuối ≥ 14:40); ngược lại ghi “chưa ghi hết phiên”. "
+                           "Bảng chi tiết hiện ở mức Phân tích chuyên sâu.")
 
 # ===== Tab 4: kiểm chứng =====
 with tabs[3]:
@@ -562,7 +636,60 @@ with tabs[3]:
         if len(res) < bt.MIN_MONTHS:
             st.warning(f"Không đủ dữ liệu để kiểm chứng (cần ≥ {bt.MIN_MONTHS} tháng, hiện có {len(res)}).")
         else:
-            t1, t2, t3, t4 = st.tabs(["1. Điểm thị trường", "2. Bộ sàng lọc cổ phiếu", "3. Danh mục", "4. Theo trạng thái thị trường"])
+            t5, t1, t2, t3, t4 = st.tabs(["Kết luận & so sánh", "1. Điểm thị trường", "2. Bộ sàng lọc cổ phiếu", "3. Danh mục",
+                                          "4. Theo trạng thái thị trường"])
+            with t5:
+                st_all = bt.summarize(res)
+                top_r, uni_r, idx_r = (st_all.loc[k, "ann_return"] * 100 for k in
+                                       ("Danh mục top (đã trừ phí)", "Mọi mã đủ điều kiện (cân bằng)", "VN-Index"))
+                mom_r = bt.summarize(R["mom"]).loc["Danh mục top (đã trừ phí)", "ann_return"] * 100
+                ic_full, ic_mom = R["ic"], R["mom_ic"]
+
+                def ic_t(x):
+                    return x["ic"].mean() / x["ic"].std() * len(x) ** 0.5 if len(x) > 2 and x["ic"].std() > 0 else float("nan")
+
+                t_health = R["regime21"]["regression"]["t"]
+                tb = R["trend_base"]
+                t_base = tb["regression"]["t"]
+                st.markdown("#### Bốn câu hỏi quyết định — trả lời bằng số liệu của lần chạy này")
+                with st.container(border=True):
+                    st.markdown(f"**1. Market Health Score có nhận diện trạng thái tốt hơn chỉ nhìn VN-Index không?**  \n"
+                                f"Hồi quy lợi suất VN-Index 21 phiên tới: điểm tổng hợp t = {t_health:.2f}; quy tắc đơn giản "
+                                f"“VN-Index trên/dưới SMA200” t = {t_base:.2f} (Newey-West, cùng giai đoạn). "
+                                + ("Điểm tổng hợp có t lớn hơn nhưng " if abs(t_health) > abs(t_base) else "Quy tắc đơn giản có t lớn hơn hoặc tương đương, ")
+                                + ("chưa vượt ngưỡng 1,96, nên không đủ bằng chứng nói nó vượt trội." if max(abs(t_health), abs(t_base)) < 1.96
+                                   else "có ít nhất một phương pháp vượt ngưỡng 1,96; xem bảng bên dưới trước khi kết luận."))
+                    st.markdown(f"**2. Stock Score có tìm được cổ phiếu tốt hơn một bộ lọc đơn giản không?**  \n"
+                                f"Lợi suất năm sau phí của Top {R['params'][1]:.0%}: điểm 4 nhóm {top_r:.1f}% · chỉ động lượng {mom_r:.1f}% · "
+                                f"mọi mã đủ điều kiện {uni_r:.1f}% · VN-Index {idx_r:.1f}%. IC trung bình: điểm 4 nhóm {ic_full['ic'].mean():.3f} "
+                                f"(t = {ic_t(ic_full):.2f}) · chỉ động lượng {ic_mom['ic'].mean():.3f} (t = {ic_t(ic_mom):.2f}). "
+                                + ("Điểm 4 nhóm cho kết quả cao hơn bộ lọc động lượng trong mẫu này, " if top_r > mom_r
+                                   else "Bộ lọc động lượng đơn giản cho kết quả bằng hoặc cao hơn điểm 4 nhóm, ")
+                                + "nhưng chênh lệch không được kiểm định ý nghĩa thống kê riêng nên không kết luận về lợi thế.")
+                    st.markdown("**3. Realtime Monitor tạo ra thông tin gì ngoài việc ghi dữ liệu?**  \n"
+                                "Biến bản tin khớp lệnh thành các điểm đáng chú ý (biến động giá, khối lượng đột biến kèm thời điểm), áp lực mua/bán chủ động "
+                                "và đối chiếu với dữ liệu REST cuối phiên; chỉ phủ các mã đang theo dõi và các phiên đã ghi, chưa kiểm chứng giá trị dự báo.")
+                    st.markdown("**4. Đã kiểm chứng trên lịch sử chưa?**  \nĐã: 2019-nay, tín hiệu t, vào lệnh t+1, phí giao dịch, hai giai đoạn. "
+                                "Kết quả tổng thể là tín hiệu yếu và không chắc chắn (xem các tab bên cạnh); đây là kết luận trung thực, không phải lợi thế đầu tư.")
+                st.markdown("**So sánh chi tiết với phương án đơn giản**")
+                cmp_ = pd.DataFrame({
+                    "LN năm sau phí (%)": [top_r, mom_r, uni_r, idx_r],
+                    "Sharpe": [st_all.loc["Danh mục top (đã trừ phí)", "sharpe"], bt.summarize(R["mom"]).loc["Danh mục top (đã trừ phí)", "sharpe"],
+                               st_all.loc["Mọi mã đủ điều kiện (cân bằng)", "sharpe"], st_all.loc["VN-Index", "sharpe"]]},
+                    index=["Top theo điểm 4 nhóm", "Top chỉ theo động lượng", "Mọi mã đủ điều kiện (cân bằng)", "VN-Index"]).round(2)
+                st.dataframe(cmp_, use_container_width=True)
+                st.markdown("**Điểm thị trường so với quy tắc SMA200** (lợi suất VN-Index 21 phiên tới, mẫu không chồng lấn)")
+                tbl = (tb["table"] * [1, 100, 100, 100]).rename(columns={"n": "Số kỳ", "mean": "TB (%)", "median": "Trung vị (%)", "pos": "% kỳ dương"}).round(2)
+                st.dataframe(tbl, use_container_width=True)
+                st.markdown("**Kiểm tra thiên lệch**")
+                bias = pd.DataFrame([
+                    ("Dùng dữ liệu tương lai khi tính tín hiệu?", "Không", "Chỉ báo chỉ dùng giá đến hết phiên t; điểm thị trường dùng phân vị mở rộng chỉ có quá khứ; có test tự động kiểm tra không nhìn trước."),
+                    ("Tín hiệu và lợi suất tính ở thời điểm nào?", "Tách rời", "Tín hiệu tại giá đóng cửa cuối tháng t, vào lệnh giá đóng cửa phiên t+1, giữ đến t+1 của tháng sau."),
+                    ("Có phí giao dịch và trượt giá?", "Phí có, trượt giá gần đúng", f"Phí {R['params'][2]:.0f} bps/chiều; chọn 60 bps để mô phỏng trượt giá. Chưa mô hình hóa khả năng mua đủ khối lượng."),
+                    ("Kiểm tra nhiều giai đoạn?", "Có", "Hai giai đoạn liên tiếp (trước/sau 2023) và theo trạng thái thị trường; độ nhạy theo ngưỡng thanh khoản và phí."),
+                    ("Thiên lệch còn lại", "Có", "Thiên lệch người sống sót (mã hủy niêm yết không có trong dữ liệu), giá điều chỉnh ngược, mẫu ngắn (~7 năm), nhiều phép thử."),
+                ], columns=["Câu hỏi", "Kết quả", "Chi tiết"])
+                st.dataframe(bias, use_container_width=True, hide_index=True)
             with t1:
                 for hz, key in ((5, "regime5"), (21, "regime21")):
                     reg = R[key]
