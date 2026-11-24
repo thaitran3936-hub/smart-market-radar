@@ -663,9 +663,12 @@ with tabs[3]:
                                 f"Lợi suất năm sau phí của Top {R['params'][1]:.0%}: điểm 4 nhóm {top_r:.1f}% · chỉ động lượng {mom_r:.1f}% · "
                                 f"mọi mã đủ điều kiện {uni_r:.1f}% · VN-Index {idx_r:.1f}%. IC trung bình: điểm 4 nhóm {ic_full['ic'].mean():.3f} "
                                 f"(t = {ic_t(ic_full):.2f}) · chỉ động lượng {ic_mom['ic'].mean():.3f} (t = {ic_t(ic_mom):.2f}). "
-                                + ("Điểm 4 nhóm cho kết quả cao hơn bộ lọc động lượng trong mẫu này, " if top_r > mom_r
-                                   else "Bộ lọc động lượng đơn giản cho kết quả bằng hoặc cao hơn điểm 4 nhóm, ")
-                                + "nhưng chênh lệch không được kiểm định ý nghĩa thống kê riêng nên không kết luận về lợi thế.")
+                                + ("Điểm 4 nhóm cao hơn bộ lọc chỉ-động-lượng trong mẫu này" if top_r > mom_r
+                                   else "Bộ lọc chỉ-động-lượng bằng hoặc cao hơn điểm 4 nhóm")
+                                + (", " if top_r > max(uni_r, idx_r) else ", nhưng **thấp hơn** ")
+                                + ("và cũng cao hơn cả mọi mã đủ điều kiện lẫn VN-Index; " if top_r > max(uni_r, idx_r)
+                                   else "mọi mã đủ điều kiện và/hoặc VN-Index, tức là chưa tạo ra lợi thế so với việc không sàng lọc; ")
+                                + "chênh lệch không được kiểm định ý nghĩa thống kê riêng nên không kết luận về lợi thế.")
                     st.markdown("**3. Realtime Monitor tạo ra thông tin gì ngoài việc ghi dữ liệu?**  \n"
                                 "Biến bản tin khớp lệnh thành các điểm đáng chú ý (biến động giá, khối lượng đột biến kèm thời điểm), áp lực mua/bán chủ động "
                                 "và đối chiếu với dữ liệu REST cuối phiên; chỉ phủ các mã đang theo dõi và các phiên đã ghi, chưa kiểm chứng giá trị dự báo.")
