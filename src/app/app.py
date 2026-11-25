@@ -8,7 +8,7 @@ Bốn câu hỏi của sản phẩm và tab trả lời:
   2. Cổ phiếu nào tốt về xu hướng, động lượng, thanh khoản, rủi ro? -> tab Xếp hạng cổ phiếu
   3. Cổ phiếu nào mạnh hơn VN-Index (RS, beta)?                    -> tab Xếp hạng cổ phiếu
   4. Phương pháp có hiệu quả khi kiểm chứng lịch sử không?          -> tab Kiểm chứng
-Tab Realtime Monitor chứng minh tích hợp WebSocket SSI; tab Phương pháp ghi công thức và giới hạn.
+Tab Phương pháp ghi công thức và giới hạn.
 """
 import os
 import sys
@@ -87,14 +87,6 @@ def get_backtest(path: str, sig, min_value: float, top_frac: float, cost_bps: fl
             "ic": ic, "regime5": bt.regime_forward_returns(a["health"], p.index_close, 5),
             "regime21": bt.regime_forward_returns(a["health"], p.index_close, 21), "relation": rel,
             "params": (min_value, top_frac, cost_bps)}
-
-
-@st.cache_data(show_spinner=False)
-def get_stream_day(path: str, sig, day: str):
-    con = get_con(path, sig)
-    trades = sv.stream_trades(con, day)
-    return (trades, sv.stream_pressure(trades), sv.stream_foreign(con, day), sv.stream_crosscheck(con, day, trades),
-            sv.stream_counts(con, day))
 
 
 def fmt_time(ts) -> str:
@@ -176,11 +168,9 @@ years = {"1 năm": 1, "3 năm": 3, "5 năm": 5}.get(horizon)
 start = asof - pd.DateOffset(years=years) if years else health.index[0]
 
 # ---------- thanh trạng thái dữ liệu ----------
-ss_status = sv.stream_status(con)
-ws = sv.ws_state(ss_status)
 stale = sv.staleness(fresh["prices_last_date"])
 rate = fresh["api_errors"] / fresh["api_calls"] * 100 if fresh["api_calls"] else 0.0
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 with c1.container(border=True):
     st.metric("Phiên giao dịch mới nhất", fresh["prices_last_date"] or "—",
               help="Ngày của dữ liệu thị trường (khác với thời điểm chương trình tải dữ liệu).")
@@ -190,12 +180,9 @@ with c2.container(border=True):
               help="Tính cả các lần thử lại. Lỗi tạm thời (429/5xx/mạng) được tự thử lại; mã lỗi hẳn được ghi trong fetch_log.")
     st.caption(f"Tỷ lệ lỗi {rate:.2f}% · tự thử lại tối đa 5 lần")
 with c3.container(border=True):
-    st.metric("WebSocket", ws["state"], help=ws["detail"])
-    st.caption(ws["detail"][:70] + ("…" if len(ws["detail"]) > 70 else ""))
-with c4.container(border=True):
-    st.metric("Dữ liệu realtime gần nhất", ss_status["last"].strftime("%H:%M:%S %d/%m") if ss_status["available"] else "—",
-              help="Thời điểm bản tin streaming cuối cùng được lưu vào cơ sở dữ liệu.")
-    st.caption(f"{ss_status['sessions']} phiên · {ss_status['rows']:,} bản tin đã lưu")
+    st.metric("Độ mới của dữ liệu", "Cần cập nhật" if stale["level"] == "warn" else "Đã cập nhật",
+              help="So phiên giao dịch mới nhất trong dữ liệu với phiên giao dịch gần nhất theo lịch (chưa biết ngày nghỉ lễ).")
+    st.caption("Dữ liệu cập nhật tự động sau mỗi phiên (GitHub Actions)")
 if sync_res and sync_res.get("status") == "error":
     st.warning("Chưa đồng bộ được dữ liệu mới từ máy chủ (đang dùng bản đã có): " + sync_res["message"])
 if stale["level"] == "warn":
@@ -203,7 +190,7 @@ if stale["level"] == "warn":
 if asof.strftime("%Y-%m-%d") != fresh["prices_last_date"]:
     st.info(f"Đang xem ngày {asof:%d/%m/%Y}; ngày giao dịch mới nhất trong dữ liệu là {fresh['prices_last_date']}.")
 
-tabs = st.tabs(["Thị trường", "Xếp hạng cổ phiếu", "Realtime Monitor", "Kiểm chứng", "Phương pháp & giới hạn"])
+tabs = st.tabs(["Thị trường", "Xếp hạng cổ phiếu", "Kiểm chứng", "Phương pháp & giới hạn"])
 
 # ===== Tab 1: sức khỏe thị trường =====
 with tabs[0]:
@@ -521,100 +508,8 @@ with tabs[1]:
             else:
                 st.info("Không đủ dữ liệu giá của mã này trong khoảng thời gian đã chọn.")
 
-# ===== Tab 3: Realtime Monitor =====
-with tabs[2]:
-    st.subheader("Realtime Monitor — dữ liệu WebSocket SSI đã lưu")
-    box = {"ok": st.success, "info": st.info, "warn": st.warning}[ws["level"]]
-    box(f"**{ws['state']}.** {ws['detail']}")
-    st.caption("Ba trạng thái được phân biệt: **Mất kết nối** (đang trong giờ giao dịch hôm nay nhưng bản tin cuối đã quá cũ), "
-               "**Đã dừng ghi / chưa ghi** (ngoài giờ giao dịch, nghỉ lễ hoặc chưa chạy bộ ghi) và **Đang ghi**. Trang này chỉ đọc cơ sở "
-               "dữ liệu nên không quan sát được trạng thái “đang kết nối lại” của tiến trình ghi; trạng thái đó chỉ hiện trong cửa sổ lệnh "
-               "của bộ ghi. Mọi thời điểm hiển thị theo giờ Việt Nam (UTC+7).")
-    with st.expander("Cách khởi chạy bộ ghi", expanded=not ss_status["available"]):
-        st.code(sv.START_CMD, language="bash")
-        st.caption("Chạy trong thư mục repo mẫu của SSI (có `python/stream_recorder.py`), giờ giao dịch 9:00-11:30 và 13:00-14:45. "
-                   "Có thể cần duyệt Smart OTP trên điện thoại. Chỉ SUBSCRIBE dữ liệu thị trường, không đặt lệnh.")
-    if ss_status["available"]:
-        st.markdown(f"**Đã ghi {ss_status['sessions']} phiên, {ss_status['rows']:,} bản tin.**")
-        if deep:
-            st.dataframe(ss_status["by_day"].rename(columns={"ngay": "Ngày", "dong": "Số bản tin", "tu": "Bản tin đầu", "den": "Bản tin cuối"}),
-                         use_container_width=True, hide_index=True)
-        day = st.selectbox("Chọn phiên", list(ss_status["by_day"]["ngay"])[::-1])
-        trades, press, foreign, cross, counts = get_stream_day(DB, sig, day)
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Bản tin đã lưu trong phiên", f"{int(counts['so_ban_tin'].sum()):,}")
-        k2.metric("Bản tin đầu (thời điểm bắt đầu ghi)", counts["dau"].min()[11:19] if len(counts) else "—")
-        k3.metric("Bản tin cuối", counts["cuoi"].max()[11:19] if len(counts) else "—")
-        if deep:
-            st.dataframe(counts.rename(columns={"loai": "Loại bản tin", "so_ban_tin": "Số bản tin đã lưu", "dau": "Đầu", "cuoi": "Cuối"}),
-                         use_container_width=True, hide_index=True)
-        if trades.empty:
-            st.info("Phiên này không có bản tin khớp lệnh.")
-        else:
-            hl = sv.stream_highlights(trades)
-            with st.container(border=True):
-                st.markdown("**Điểm đáng chú ý trong phiên**")
-                if hl.empty:
-                    st.info("Không có mã nào biến động giá hoặc khối lượng đủ lớn theo ngưỡng mô tả bên dưới.")
-                else:
-                    st.dataframe(hl.assign(thoi_diem=hl["thoi_diem"].dt.strftime("%H:%M:%S"))[["thoi_diem", "ma", "loai", "chi_tiet"]].rename(
-                        columns={"thoi_diem": "Thời điểm", "ma": "Mã", "loai": "Loại", "chi_tiet": "Chi tiết"}),
-                        use_container_width=True, hide_index=True)
-                st.caption("Biến động giá: mã có thay đổi lớn nhất so với giá khớp đầu tiên bộ ghi nhận được (kèm lúc đạt cực trị). "
-                           "Khối lượng đột biến: cửa sổ 5 phút có khối lượng ≥ 3 lần trung vị của chính mã đó. Chỉ là thống kê mô tả trên "
-                           "các mã đang theo dõi, không phải cảnh báo hay tín hiệu giao dịch.")
-            wl = sv.stream_watchlist(trades)
-            st.markdown(f"**Danh sách mã đang theo dõi ({len(wl)} mã):** {', '.join(wl.index)}")
-            st.dataframe(wl.rename(columns={"gia_cuoi": "Giá khớp gần nhất", "gia_dau_ghi": "Giá khớp đầu tiên ghi được",
-                                            "doi_%": "Đổi so với giá đầu (%)", "kl_luy_ke": "KL khớp lũy kế",
-                                            "so_lenh": "Số bản tin khớp", "luc_cuoi": "Lúc cuối"}).round(2),
-                         use_container_width=True,
-                         column_config={"Đổi so với giá đầu (%)": st.column_config.NumberColumn(format="%.2f"),
-                                        "KL khớp lũy kế": st.column_config.NumberColumn(format="%d")})
-            st.caption("“Đổi so với giá đầu” tính từ lần khớp đầu tiên bộ ghi nhận được, không phải so với giá tham chiếu của sàn.")
-            pick = st.selectbox("Diễn biến giá khớp trong phiên của mã", list(wl.index))
-            tp = trades[trades["symbol"] == pick].copy()
-            tp["t"] = pd.to_datetime(tp["recv_time"], errors="coerce")
-            show(style(go.Figure(go.Scatter(x=tp["t"], y=tp["price"], mode="lines+markers", name=pick)),
-                       f"Giá khớp {pick} theo thời gian nhận bản tin", 300))
-
-            st.markdown("**Áp lực mua/bán chủ động** (giá trị khớp theo chiều lệnh chủ động; ròng = mua chủ động − bán chủ động)")
-            buy, sell = sv.top_pressure(press)
-            cc1, cc2 = st.columns(2)
-            if len(buy):
-                f1_ = go.Figure(go.Bar(x=buy["rong"] / 1e6, y=buy.index, orientation="h", marker_color=REGIME_COLOR["Mạnh"]))
-                with cc1:
-                    show(style(f1_, "Mua ròng chủ động lớn nhất (triệu đồng)", 340, yaxis=dict(autorange="reversed")))
-            else:
-                cc1.info("Không có mã nào mua ròng chủ động trong dữ liệu đã ghi.")
-            if len(sell):
-                f2s = go.Figure(go.Bar(x=sell["rong"] / 1e6, y=sell.index, orientation="h", marker_color=REGIME_COLOR["Yếu"]))
-                with cc2:
-                    show(style(f2s, "Bán ròng chủ động lớn nhất (triệu đồng)", 340, yaxis=dict(autorange="reversed")))
-            else:
-                cc2.info("Không có mã nào bán ròng chủ động trong dữ liệu đã ghi.")
-            st.caption("Chiều lệnh (mua/bán chủ động) lấy từ trường `side` của bản tin khớp lệnh SSI; chỉ phản ánh các mã và "
-                       "khoảng thời gian bộ ghi chạy, không phải toàn thị trường.")
-            if not foreign.empty:
-                st.markdown("**Khối ngoại trong phiên** (lũy kế mua/bán theo bản tin room mới nhất của từng mã)")
-                fx = foreign.assign(mua=lambda x: x["mua"] / 1e6, ban=lambda x: x["ban"] / 1e6, rong=lambda x: x["rong"] / 1e6)
-                st.dataframe(fx.rename(columns={"mua": "Mua (triệu đồng)", "ban": "Bán (triệu đồng)", "rong": "Ròng (triệu đồng)",
-                                                "room_con_lai": "Room còn lại (cp)", "room_tong": "Room tổng (cp)"}).head(30).round(1),
-                             use_container_width=True,
-                             column_config={"Room còn lại (cp)": st.column_config.NumberColumn(format="%d"),
-                                            "Room tổng (cp)": st.column_config.NumberColumn(format="%d")})
-            st.markdown("**Đối chiếu chéo với dữ liệu REST** (khối lượng khớp cuối phiên từ streaming so với `totalMatch`)")
-            if cross.empty:
-                st.info("Chưa có dữ liệu để đối chiếu.")
-            else:
-                st.write(cross["ket_luan"].value_counts().to_dict())
-                if deep:
-                    st.dataframe(cross.round(2), use_container_width=True, hide_index=True)
-                st.caption("Chỉ so sánh khi bộ ghi chạy tới cuối phiên (bản tin cuối ≥ 14:40); ngược lại ghi “chưa ghi hết phiên”. "
-                           "Bảng chi tiết hiện ở mức Phân tích chuyên sâu.")
-
 # ===== Tab 4: kiểm chứng =====
-with tabs[3]:
+with tabs[2]:
     st.subheader("Phương pháp có hiệu quả khi kiểm chứng bằng dữ liệu lịch sử không?")
     st.caption("Tín hiệu tính tới hết phiên t, vào lệnh ở giá đóng cửa phiên t+1, tái cân bằng hằng tháng, có chi phí giao dịch. "
                "Không tham số nào được tối ưu trên dữ liệu (trọng số bằng nhau, ngưỡng 1/3 – 2/3), nên không có tập huấn luyện để "
@@ -669,9 +564,9 @@ with tabs[3]:
                                 + ("và cũng cao hơn cả mọi mã đủ điều kiện lẫn VN-Index; " if top_r > max(uni_r, idx_r)
                                    else "mọi mã đủ điều kiện và/hoặc VN-Index, tức là chưa tạo ra lợi thế so với việc không sàng lọc; ")
                                 + "chênh lệch không được kiểm định ý nghĩa thống kê riêng nên không kết luận về lợi thế.")
-                    st.markdown("**3. Realtime Monitor tạo ra thông tin gì ngoài việc ghi dữ liệu?**  \n"
-                                "Biến bản tin khớp lệnh thành các điểm đáng chú ý (biến động giá, khối lượng đột biến kèm thời điểm), áp lực mua/bán chủ động "
-                                "và đối chiếu với dữ liệu REST cuối phiên; chỉ phủ các mã đang theo dõi và các phiên đã ghi, chưa kiểm chứng giá trị dự báo.")
+                    st.markdown("**3. Dữ liệu đầu vào có đáng tin không?**  \n"
+                                "Giá đóng cửa VN-Index được đối chiếu với giá tham chiếu của sàn; độ rộng tự tính được đối chiếu với `indexSummary` "
+                                "chính thức (tab Thị trường, mục dữ liệu chi tiết); lợi suất cực đoan được kiểm tra trước khi backtest; dòng nghi lỗi được gắn cờ chứ không xóa.")
                     st.markdown("**4. Đã kiểm chứng trên lịch sử chưa?**  \nĐã: 2019-nay, tín hiệu t, vào lệnh t+1, phí giao dịch, hai giai đoạn. "
                                 "Kết quả tổng thể là tín hiệu yếu và không chắc chắn (xem các tab bên cạnh); đây là kết luận trung thực, không phải lợi thế đầu tư.")
                 st.markdown("**So sánh chi tiết với phương án đơn giản**")
@@ -774,15 +669,15 @@ with tabs[3]:
                        "Có thiên lệch người sống sót, giá điều chỉnh ngược và chưa tính trượt giá thực tế.")
 
 # ===== Tab 5: phương pháp =====
-with tabs[4]:
+with tabs[3]:
     st.subheader("Phương pháp, giả định và giới hạn")
     st.markdown("**Bốn câu hỏi sản phẩm trả lời:** (1) Thị trường đang mạnh, trung tính hay yếu? (2) Cổ phiếu nào tốt về xu hướng, "
                 "động lượng, thanh khoản, rủi ro? (3) Cổ phiếu nào mạnh hơn VN-Index? (4) Phương pháp có hiệu quả khi kiểm chứng lịch sử không? "
                 "**Người dùng mục tiêu:** nhà đầu tư cá nhân, người học phân tích chứng khoán, chuyên viên phân tích.")
     with st.expander("Nguồn dữ liệu và universe", expanded=True):
         st.markdown(f"""
-- **SSI FastConnect v3**: REST (`securitiesByBoard`, `securitiesSummary`, `indexSummary`) cho giá và khối lượng cuối ngày từ 2018; WebSocket
-  (khớp lệnh, room khối ngoại, tick chỉ số) lưu vào `stream_raw`. Giờ lưu theo Asia/Ho_Chi_Minh (UTC+7).
+- **SSI FastConnect v3**: REST (`securitiesByBoard`, `securitiesSummary`, `indexSummary`) cho giá và khối lượng cuối ngày từ 2018. Giờ lưu theo Asia/Ho_Chi_Minh (UTC+7).
+  Bộ ghi WebSocket (`scripts/stream_recorder.py`) đã được chạy thử và lưu dữ liệu vào `stream_raw` nhưng **không dùng trong giao diện hay phân tích**.
 - **Universe**: toàn bộ mã HOSE, HNX, UPCoM có dữ liệu. Một mã được **xếp hạng** nếu trung vị giá trị khớp 60 phiên ≥ ngưỡng thanh khoản
   (mặc định 1 tỷ đồng/phiên) và có giao dịch ≥ 80% số phiên; vì UPCoM có tỷ lệ phiên không giao dịch rất cao nên bộ lọc này loại phần lớn mã kém thanh khoản.
 - **Dữ liệu thiếu/lỗi**: dòng nghi lỗi được **gắn cờ** (`data_status`: ok / no_trade / suspect / missing, cùng `flags`), không bị xóa.
@@ -817,8 +712,7 @@ with tabs[4]:
         st.markdown("""
 Điểm số là công cụ định lượng hỗ trợ phân tích, **không phải dự báo chắc chắn lợi suất tương lai** và không phải khuyến nghị đầu tư.
 Thiên lệch người sống sót (mã đã hủy niêm yết không có trong dữ liệu); giá điều chỉnh ngược; chưa mô hình hóa trượt giá và khả năng mua đủ khối lượng;
-độ rộng lịch sử tự tính từ giá chứ không phải số liệu chính thức của sàn; mã ít giao dịch bị loại; dữ liệu streaming mới ghi một số phiên và
-chỉ gồm các mã đã đăng ký theo dõi. Kiểm chứng cho thấy tín hiệu yếu (xem tab Kiểm chứng). Không dùng kết quả để tự động đặt lệnh.
+độ rộng lịch sử tự tính từ giá chứ không phải số liệu chính thức của sàn; mã ít giao dịch bị loại; dữ liệu streaming đã ghi không được dùng trong phân tích. Kiểm chứng cho thấy tín hiệu yếu (xem tab Kiểm chứng). Không dùng kết quả để tự động đặt lệnh.
 """)
     with st.expander("Cơ sở tham khảo (tự kiểm tra lại trước khi trích dẫn)"):
         st.markdown("Jegadeesh & Titman (1993); Levy (1967); Faber (2007); Ang, Hodrick, Xing & Zhang (2006); Amihud (2002); "

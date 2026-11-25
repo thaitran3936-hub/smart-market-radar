@@ -139,13 +139,13 @@ Mỗi lần cập nhật ghi lại chuỗi của từng mã (vì giá điều ch
 
 
 ## Giao diện (Streamlit)
-Năm tab, mỗi tab trả lời một câu hỏi của sản phẩm: **Thị trường** (mạnh/trung tính/yếu?), **Xếp hạng cổ phiếu** (cổ phiếu nào tốt, mạnh hơn VN-Index?),
-**Realtime Monitor** (dữ liệu WebSocket đã lưu), **Kiểm chứng** (phương pháp có hiệu quả không?), **Phương pháp & giới hạn**.
+Bốn tab, mỗi tab trả lời một câu hỏi của sản phẩm: **Thị trường** (mạnh/trung tính/yếu?), **Xếp hạng cổ phiếu** (cổ phiếu nào tốt, mạnh hơn VN-Index?),
+**Kiểm chứng** (phương pháp có hiệu quả không?), **Phương pháp & giới hạn**.
 Giao diện tối mặc định (`.streamlit/config.toml`); đổi sang sáng ở menu ⋮ → Settings. Điểm Rủi ro thấp: cao = rủi ro thấp (tốt).
 
 **Hai mức hiển thị** (thanh bên): *Tổng quan* (kết luận, dấu hiệu cần theo dõi) và *Phân tích chuyên sâu* (thêm công thức, cột chi tiết, bảng kiểm chứng).
 Tab Thị trường chia ba lớp: trạng thái → nguyên nhân (diễn giải có điều kiện, không khuyến nghị) → dữ liệu chi tiết. Trang chi tiết mã mở đầu bằng
-kết luận nhanh (hạng, xu hướng, RS, rủi ro, 3 yếu tố mạnh/yếu nhất). Realtime có khung "Điểm đáng chú ý" (biến động giá, khối lượng đột biến).
+kết luận nhanh (hạng, xu hướng, RS, rủi ro, 3 yếu tố mạnh/yếu nhất). Bộ ghi WebSocket (`scripts/stream_recorder.py`) vẫn có trong mã nguồn nhưng dữ liệu streaming không được dùng trong giao diện hay phân tích.
 Tab Kiểm chứng có mục "Kết luận & so sánh" trả lời bốn câu hỏi bằng số liệu, so với quy tắc SMA200 và bộ lọc chỉ-động-lượng, kèm bảng kiểm tra thiên lệch.
 
 
