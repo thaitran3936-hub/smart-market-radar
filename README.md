@@ -1,13 +1,6 @@
 # Smart Market Radar
 
 Ra-đa sức khỏe thị trường chứng khoán Việt Nam và sàng lọc cổ phiếu, xây dựng trên **SSI FastConnect v3**
-(đồ án cuối kỳ, học phần Gói phần mềm ứng dụng cho tài chính 1).
-
-> **Công cụ phân tích học thuật, không phải khuyến nghị đầu tư.** Sản phẩm chỉ dùng dữ liệu thị trường,
-> **không gửi lệnh giao dịch** và không đọc dữ liệu tài khoản.
-
-*Ghi chú về nguồn dữ liệu:* đề nêu NEO API của VPBankS; đồ án dùng SSI FastConnect theo sự đồng ý của giảng viên
-(điền ngày và hình thức xác nhận vào báo cáo).
 
 ## 1. Vấn đề và người dùng
 Nhà đầu tư cá nhân thường chọn cổ phiếu mà không biết thị trường chung đang khỏe hay yếu. Sản phẩm trả lời hai câu hỏi:
@@ -16,7 +9,7 @@ Nhà đầu tư cá nhân thường chọn cổ phiếu mà không biết thị 
 
 ## 2. Kiến trúc
 ```
-SSI REST (securitiesByBoard, securitiesSummary)  --> src/ssi_api/client.py  (giới hạn tần suất, thử lại, làm mới token)
+SSI REST (securitiesByBoard, securitiesSummary, indexSummary) --> src/ssi_api/client.py  (giới hạn tần suất, thử lại, làm mới token)
                                                  --> src/data/collector.py + cleaning.py (chuẩn hóa, gắn cờ chất lượng)
 SSI WebSocket (khớp lệnh, room khối ngoại)       --> scripts/stream_recorder.py ----+
                                                                                     v
@@ -66,7 +59,7 @@ schtasks /Create /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 15:30 /TN "SmartMarketRad
 Nếu đường dẫn có dấu tiếng Việt khiến lệnh lỗi, tạo bằng giao diện: Task Scheduler > Create Basic Task > Daily > Start a program >
 chọn `scripts\daily_update.bat`. Nhật ký ở `data/daily_update.log`; script thoát mã 1 nếu > 5% mã lỗi, mã 2 nếu lỗi chung (mất mạng, sai key).
 `indexSummary` (số mã tăng/giảm/trần/sàn chính thức) SSI **không lưu lịch sử**, nên phải được lưu mỗi ngày từ lúc bắt đầu chạy.
-Hướng phát triển: chạy bộ cập nhật trên máy chủ/dịch vụ lập lịch thay vì máy cá nhân.
+Cách thay thế không cần máy cá nhân: xem mục "Cập nhật tự động không cần bật máy" bên dưới (GitHub Actions).
 
 ### Ghi streaming (WebSocket)
 `scripts/stream_recorder.py` dùng SDK chính thức `ssi-sdk` và các tệp `config.py`, `auth_helper.py` của repo mẫu
@@ -76,6 +69,7 @@ Hướng phát triển: chạy bộ cập nhật trên máy chủ/dịch vụ l�
 python python/stream_recorder.py --db "<đường dẫn>/data/market.db" --minutes 60
 ```
 Lần đầu mỗi ngày cần duyệt Smart OTP trên ứng dụng SSI (chỉ để kết nối; bộ ghi chỉ **đăng ký nhận** dữ liệu thị trường).
+Dữ liệu streaming đã ghi (3 phiên) không được dùng trong giao diện hay phân tích.
 
 ## 5. Dữ liệu
 Mọi dấu thời gian theo `Asia/Ho_Chi_Minh` (UTC+7). Từ điển dữ liệu chi tiết: `docs/api_survey.md`.
@@ -104,8 +98,7 @@ Chi tiết công thức, giả định và cơ sở tham khảo: tab "Phương p
 - Chưa mô hình hóa trượt giá, tác động thị trường và khả năng mua đủ khối lượng.
 - Độ rộng lịch sử tự tính từ giá (SSI không có lịch sử số mã tăng/giảm chính thức); `indexSummary` chỉ trả phiên gần nhất.
 - Dữ liệu SSI có lỗi cục bộ (sai đơn vị giá trị ở vài ngày, giá trùng): được gắn cờ chứ không xóa.
-- Dữ liệu streaming chỉ ghi một số phiên; mã thanh khoản thấp bị loại khỏi xếp hạng.
-- Bộ ghi streaming phụ thuộc repo mẫu của SSI và cần Smart OTP mỗi ngày.
+
 
 ## 8. Cấu trúc thư mục
 ```
@@ -116,21 +109,21 @@ tests           kiểm thử tự động   docs           khảo sát API, mô 
 data_sample     mẫu dữ liệu        report         báo cáo
 ```
 
-## Cập nhật tự động không cần bật máy (tùy chọn, hướng phát triển)
+## Cập nhật tự động không cần bật máy (GitHub Actions)
 
 Cơ chế: GitHub Actions chạy `scripts/daily_update.py` lúc 15:30 (giờ VN) các ngày làm việc trên máy chủ của GitHub,
 rồi đăng `market.db.gz` lên Release `data-latest`. Máy người xem chạy `python scripts/sync_db.py` để lấy bản mới nhất
 (streaming/indexSummary đã ghi cục bộ được giữ lại).
 
 Thiết lập một lần:
-1. Tạo kho GitHub **PRIVATE**, đẩy mã nguồn lên (không đẩy `.env`, `config.json`, `token_cache.json`, `data/`).
+1. Tạo kho GitHub (kho của đồ án này để **công khai** để giảng viên chấm; kho riêng tư cũng chạy được), đẩy mã nguồn lên (không đẩy `.env`, `config.json`, `token_cache.json`, `data/`).
 2. Settings → Secrets and variables → Actions: thêm `SSI_API_KEY`, `SSI_API_SECRET`.
 3. Tab Actions → daily-update → Run workflow (lần đầu tick "full"; ~1–2 giờ). Lần đầu chưa có DB thì tải lại từ 2018.
    Tốt nhất tải sẵn `data/market.db` đã có: `gzip -c data/market.db > market.db.gz` rồi `gh release create data-latest market.db.gz`.
 4. Trên máy xem: thêm `GITHUB_REPO=chu/ten-kho` và `GITHUB_TOKEN` (fine-grained, chỉ đọc Contents) vào `.env`.
 
-Lưu ý trung thực: chưa kiểm chứng SSI có cho phép IP của GitHub runner; hạn mức phút Actions của kho private miễn phí
-(2.000 phút/tháng) – thứ 2–5 chỉ cập nhật mã còn giao dịch (`--active-only`), thứ 6 cập nhật toàn bộ.
+Lưu ý trung thực: quy trình đã chạy thành công trên GitHub runner (cả chạy tay và theo lịch). Thứ 2–5 chỉ cập nhật mã còn giao dịch
+(`--active-only`), thứ 6 và khi chạy tay chọn "full" cập nhật toàn bộ. Kho công khai nên không bị giới hạn phút Actions như kho riêng tư.
 
 ### Dung lượng dữ liệu
 Không xóa lịch sử giá: backtest và chỉ báo cần chuỗi dài. ~180 byte/dòng, thêm ~1.500 dòng/ngày (~0,06%/ngày).
@@ -149,12 +142,11 @@ kết luận nhanh (hạng, xu hướng, RS, rủi ro, 3 yếu tố mạnh/yếu
 Tab Kiểm chứng có mục "Kết luận & so sánh" trả lời bốn câu hỏi bằng số liệu, so với quy tắc SMA200 và bộ lọc chỉ-động-lượng, kèm bảng kiểm tra thiên lệch.
 
 
-## Đưa giao diện lên web (Streamlit Community Cloud) — người xem chỉ cần mở link
+## Đưa giao diện lên web (Streamlit Community Cloud) 
 1. share.streamlit.io → đăng nhập bằng GitHub → New app → chọn kho `smart-market-radar`, nhánh `main`, tệp chính `src/app/app.py`.
-2. Advanced settings → Secrets, dán (giá trị thật của bạn):
+2. Advanced settings → Secrets:
 ```
-GITHUB_REPO = "chu-so-huu/smart-market-radar"
-GITHUB_TOKEN = "token-chi-doc-contents"
+GITHUB_REPO = "https://github.com/thaitran3936-hub/smart-market-radar"
 ```
 3. Lần mở đầu ứng dụng tự tải `market.db.gz` từ Release `data-latest`. Sau đó, mỗi lần có người mở hoặc làm mới trang (tối đa mỗi 15 phút
    một lần kiểm tra), nếu Release có bản mới hơn thì tải về và tính lại. GitHub Actions cập nhật Release lúc 15:30 các ngày làm việc,
